@@ -1,5 +1,6 @@
 import os
 import time
+import argparse
 import requests
 import threading
 from urllib.parse import urlparse, urljoin
@@ -152,8 +153,10 @@ class Crawler:
                 f.write(f"| {item['title']} | [{item['url']}]({item['url']}) | [{item['file']}]({item['file']}) |\n")
         logger.info(f"Generated index at {index_path}")
 
-    def run(self):
-        urls = self.fetch_sitemap()
+    def run(self, urls=None):
+        if urls is None:
+            urls = self.fetch_sitemap()
+
         if not urls:
             logger.warning("No URLs found to process.")
             return
@@ -168,5 +171,29 @@ class Crawler:
         logger.info("Done.")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Crawl and convert documentation to Markdown.")
+    parser.add_argument('--mode', choices=['sitemap', 'list'], default='sitemap',
+                        help="Source of URLs: 'sitemap' or 'list' (text file).")
+    parser.add_argument('--file', help="Path to the text file containing URLs (required if mode is 'list').")
+
+    args = parser.parse_args()
+
+    urls = None
+    if args.mode == 'list':
+        if not args.file:
+            parser.error("--file is required when mode is 'list'")
+
+        if not os.path.exists(args.file):
+            logger.error(f"File not found: {args.file}")
+            exit(1)
+
+        try:
+            with open(args.file, 'r', encoding='utf-8') as f:
+                urls = [line.strip() for line in f if line.strip()]
+            logger.info(f"Loaded {len(urls)} URLs from {args.file}")
+        except Exception as e:
+            logger.error(f"Failed to read file {args.file}: {e}")
+            exit(1)
+
     crawler = Crawler()
-    crawler.run()
+    crawler.run(urls)
