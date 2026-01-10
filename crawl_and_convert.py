@@ -9,15 +9,15 @@ from markdownify import markdownify as md
 from queue import Queue
 from tqdm import tqdm
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from playwright.sync_api import sync_playwright
 
 # Configuration
 BASE_URL = "https://antigravity.google"
 SITEMAP_URL = f"{BASE_URL}/sitemap.xml"
 OUTPUT_DIR = "docs"
-CONCURRENCY = 5
-REQUEST_INTERVAL = 0.5
 MAX_RETRIES = 3
+WAIT_FOR_SELECTOR = "main"  # 等待主内容区域加载
+PAGE_LOAD_TIMEOUT = 30000  # 30秒超时
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,13 +27,37 @@ logger = logging.getLogger(__name__)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 class Crawler:
-    def __init__(self):
+    def __init__(self, custom_folder=None):
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (compatible; Bot/1.0; +http://example.com)'
         })
         self.results = []
         self.lock = threading.Lock()
+        self.subdomain = None
+        self.custom_folder = custom_folder
+    
+    def extract_subdomain(self, url):
+        """从URL中提取二级域名（主域名）作为文件夹名。"""
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if hostname:
+            parts = hostname.split('.')
+            
+            # 提取二级域名（主域名）的逻辑：
+            # code.claude.com -> parts[-2] = 'claude'
+            # antigravity.google -> parts[-2] = 'antigravity'
+            # example.com -> parts[-2] = 'example'
+            # localhost -> parts[-1] = 'localhost'
+            
+            if len(parts) >= 2:
+                # 取倒数第二个部分作为二级域名
+                return parts[-2]
+            elif len(parts) == 1:
+                # 只有一个部分，如 localhost
+                return parts[0]
+        
+        return 'default'
 
     def fetch_sitemap(self):
         """Fetches and parses the sitemap to extract /docs/ URLs."""
@@ -55,31 +79,52 @@ class Crawler:
             logger.error(f"Failed to fetch sitemap: {e}")
             return []
 
-    def process_url(self, url):
-        """Downloads and converts a single URL."""
+    def process_url_with_playwright(self, page, url):
+        """Downloads and converts a single URL using Playwright."""
+        # 如果还没有设置subdomain，从当前URL提取或使用custom_folder
+        if self.subdomain is None:
+            if self.custom_folder:
+                self.subdomain = self.custom_folder
+                logger.info(f"Using custom folder: {self.subdomain}")
+            else:
+                self.subdomain = self.extract_subdomain(url)
+                logger.info(f"Using auto-detected folder (domain): {self.subdomain}")
+            # 创建子文件夹
+            self.output_subdir = os.path.join(OUTPUT_DIR, self.subdomain)
+            os.makedirs(self.output_subdir, exist_ok=True)
+        
         slug = urlparse(url).path.strip('/').replace('/', '_')
         if not slug:
             slug = "index"
         filename = f"{slug}.md"
-        filepath = os.path.join(OUTPUT_DIR, filename)
+        filepath = os.path.join(self.output_subdir, filename)
 
         content = None
         title = None
         
         for attempt in range(MAX_RETRIES):
             try:
-                # Rate limiting (per thread)
-                time.sleep(REQUEST_INTERVAL)
+                # 导航到页面
+                page.goto(url, timeout=PAGE_LOAD_TIMEOUT)
                 
-                response = self.session.get(url, timeout=10)
-                response.raise_for_status()
-                content = response.content
+                # 等待主内容加载完成
+                # 尝试等待文章内容或主区域
+                try:
+                    page.wait_for_selector('article, main, [role="main"]', timeout=10000)
+                except:
+                    pass
+                
+                # 额外等待确保JS完全渲染
+                page.wait_for_load_state('networkidle', timeout=15000)
+                
+                # 获取渲染后的HTML
+                content = page.content()
                 break
-            except requests.RequestException as e:
+            except Exception as e:
                 logger.warning(f"Attempt {attempt + 1} failed for {url}: {e}")
                 if attempt == MAX_RETRIES - 1:
                     logger.error(f"Failed to download {url} after {MAX_RETRIES} attempts")
-                    return
+                    return None
         
         if content:
             try:
@@ -89,10 +134,11 @@ class Crawler:
                 with open(filepath, 'w', encoding='utf-8') as f:
                     f.write(markdown_content)
                 
-                with self.lock:
-                    self.results.append({'title': title, 'url': url, 'file': filename})
+                return {'title': title, 'url': url, 'file': filename}
             except Exception as e:
                 logger.error(f"Error converting {url}: {e}")
+        
+        return None
 
     def convert_to_markdown(self, html_content):
         """Extracts content and converts to Markdown."""
@@ -103,9 +149,7 @@ class Crawler:
         title = title_tag.text.strip() if title_tag else "No Title"
 
         # Remove unwanted elements
-        # 'nav', 'footer', 'sidebar', 'toc', 'breadcrumbs'
-        # We need to be a bit aggressive or use heuristics for classes if tags aren't standard
-        for tag in soup.find_all(['nav', 'footer', 'script', 'style', 'noscript', 'iframe']):
+        for tag in soup.find_all(['nav', 'footer', 'script', 'style', 'noscript', 'iframe', 'header']):
             tag.decompose()
             
         # Common classes/IDs for unwanted elements
@@ -113,16 +157,34 @@ class Crawler:
             '.sidebar', '#sidebar', 
             '.toc', '#toc', 
             '.breadcrumbs', '.breadcrumb', 
-            '.footer', '.header', '.nav'
+            '.footer', '.header', '.nav',
+            '[role="navigation"]',
+            '.navigation',
+            '.menu'
         ]
         for selector in unwanted_selectors:
             for element in soup.select(selector):
                 element.decompose()
 
-        # Prioritize content extraction
-        content_element = soup.find('main')
-        if not content_element:
-            content_element = soup.find('article')
+        # Prioritize content extraction - 尝试更具体的选择器
+        content_element = None
+        
+        # 尝试找到文档内容区域
+        content_selectors = [
+            'article',
+            '[role="main"]',
+            '.docs-content',
+            '.content',
+            '.markdown-body',
+            'main',
+            '.main-content'
+        ]
+        
+        for selector in content_selectors:
+            content_element = soup.select_one(selector)
+            if content_element and len(content_element.get_text(strip=True)) > 100:
+                break
+        
         if not content_element:
             content_element = soup.find('body')
             
@@ -130,21 +192,24 @@ class Crawler:
             return "", title
 
         # Convert to Markdown
-        # markdownify can take a soup object or string.
-        # We pass the string representation of the filtered element.
-        markdown = md(str(content_element), heading_style="ATX", strip=['a', 'img']) 
-        # Requirement says "Only extract body text...". 
-        # "Target: extract main/article/body" usually implies keeping formatting like headers, lists, etc.
-        # But "Only extract body text" might mean stripping images/links? 
-        # Usually "Convert to Markdown" implies keeping structure. 
-        # "remove nav, footer..." implies the rest is valuable.
-        # I will keep standard markdown formatting.
+        markdown = md(str(content_element), heading_style="ATX", strip=['img'])
         
-        return markdown.strip(), title
+        # 清理多余的空行
+        lines = markdown.split('\n')
+        cleaned_lines = []
+        prev_empty = False
+        for line in lines:
+            is_empty = not line.strip()
+            if is_empty and prev_empty:
+                continue
+            cleaned_lines.append(line)
+            prev_empty = is_empty
+        
+        return '\n'.join(cleaned_lines).strip(), title
 
     def generate_index(self):
         """Generates the index.md file."""
-        index_path = os.path.join(OUTPUT_DIR, "index.md")
+        index_path = os.path.join(self.output_subdir, "index.md")
         with open(index_path, 'w', encoding='utf-8') as f:
             f.write("# Documentation Index\n\n")
             f.write("| Title | Original URL | Local File |\n")
@@ -161,11 +226,23 @@ class Crawler:
             logger.warning("No URLs found to process.")
             return
 
-        logger.info(f"Starting download of {len(urls)} pages with {CONCURRENCY} threads...")
+        logger.info(f"Starting download of {len(urls)} pages using Playwright...")
         
-        with ThreadPoolExecutor(max_workers=CONCURRENCY) as executor:
-            # Using tqdm for progress bar
-            list(tqdm(executor.map(self.process_url, urls), total=len(urls), unit="page"))
+        with sync_playwright() as p:
+            # 启动浏览器
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+            page = context.new_page()
+            
+            # 使用 tqdm 显示进度
+            for url in tqdm(urls, unit="page"):
+                result = self.process_url_with_playwright(page, url)
+                if result:
+                    self.results.append(result)
+            
+            browser.close()
             
         self.generate_index()
         logger.info("Done.")
@@ -175,6 +252,7 @@ if __name__ == "__main__":
     parser.add_argument('--mode', choices=['sitemap', 'list'], default='sitemap',
                         help="Source of URLs: 'sitemap' or 'list' (text file).")
     parser.add_argument('--file', help="Path to the text file containing URLs (required if mode is 'list').")
+    parser.add_argument('--folder', help="Custom folder name under 'docs/' (overrides auto-detection from domain).")
 
     args = parser.parse_args()
 
@@ -195,5 +273,5 @@ if __name__ == "__main__":
             logger.error(f"Failed to read file {args.file}: {e}")
             exit(1)
 
-    crawler = Crawler()
+    crawler = Crawler(custom_folder=args.folder)
     crawler.run(urls)
