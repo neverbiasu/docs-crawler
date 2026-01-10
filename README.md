@@ -1,34 +1,134 @@
-# Google Antigravity Docs Crawler
+# Docs Crawler
 
-This script crawls the documentation pages from [Google Antigravity](https://antigravity.google) and converts them to Markdown.
+A powerful documentation crawler that converts web documentation to Markdown format using Playwright for JavaScript-rendered content.
+
+## Features
+
+- Crawls documentation from sitemaps or URL lists
+- Uses Playwright to handle JavaScript-rendered Single Page Applications (SPAs)
+- Converts HTML to clean Markdown format
+- Auto-detects domain-based folder structure
+- Generates an index of all crawled pages
+- Progress tracking with tqdm
+- Retry logic for failed requests
 
 ## Requirements
 
-- Python 3.x
-- Dependencies: `requests`, `markdownify`, `beautifulsoup4`, `tqdm`, `lxml`
+- Python 3.8+
+- Poetry (for dependency management)
 
 ## Installation
 
+### Using Poetry (Recommended)
+
 ```bash
-pip install requests markdownify beautifulsoup4 tqdm lxml
+# Install Poetry if you haven't already
+curl -sSL https://install.python-poetry.org | python3 -
+
+# Clone the repository
+git clone https://github.com/neverbiasu/docs-crawler.git
+cd docs-crawler
+
+# Install dependencies
+poetry install
+
+# Install Playwright browsers
+poetry run playwright install chromium
+```
+
+### Using pip
+
+```bash
+pip install docs-crawler
+playwright install chromium
 ```
 
 ## Usage
 
-Run the crawler with a single command:
+### Command Line Interface
+
+The package provides a `docs-crawler` command:
 
 ```bash
-python3 crawl_and_convert.py
+# Crawl from sitemap
+poetry run docs-crawler --base-url https://antigravity.google
+
+# Crawl from a list of URLs
+poetry run docs-crawler --mode list --file urls.txt
+
+# Specify custom output folder
+poetry run docs-crawler --base-url https://example.com --folder my-docs
+
+# Specify custom sitemap URL
+poetry run docs-crawler --sitemap-url https://example.com/custom-sitemap.xml
+```
+
+### Python API
+
+```python
+from docs_crawler import Crawler
+
+# Create crawler instance
+crawler = Crawler(
+    base_url="https://antigravity.google",
+    output_dir="output",
+    custom_folder="antigravity"
+)
+
+# Run from sitemap
+crawler.run()
+
+# Or run with custom URLs
+urls = [
+    "https://example.com/docs/page1",
+    "https://example.com/docs/page2"
+]
+crawler.run(urls)
 ```
 
 ## Output
 
-- The downloaded Markdown files will be saved in the `docs/` directory.
-- An index of all downloaded pages is available at `docs/index.md`.
+- The downloaded Markdown files will be saved in the `output/` directory (or custom directory).
+- An index of all downloaded pages is available at `output/{folder}/index.md`.
+- Files are organized by domain or custom folder name.
+
+## Development
+
+```bash
+# Install development dependencies
+poetry install --with dev
+
+# Run tests
+poetry run pytest
+
+# Format code
+poetry run black .
+
+# Lint code
+poetry run flake8
+
+# Type checking
+poetry run mypy docs_crawler
+```
+
+## Configuration
+
+The crawler can be configured through:
+- Command-line arguments
+- Python API parameters
+- Environment variables (coming soon)
 
 ## Notes
 
-- The script adheres to `robots.txt` (User-Agent is allowed).
-- It uses 5 concurrent threads with a 0.5s interval per thread to be polite.
-- It filters for pages under `/docs/` from the sitemap.
-- **Note:** The target website is a Single Page Application (SPA) utilizing Angular. The content is rendered client-side. As per the requirements, this script uses `requests` and `BeautifulSoup`, which fetch the server-side HTML. If the server does not perform Server-Side Rendering (SSR), the downloaded files may contain minimal content. This is a limitation of using static scraping tools on an SPA.
+- The crawler uses Playwright to handle JavaScript-rendered content, making it suitable for modern SPAs.
+- It filters for pages under `/docs/` from the sitemap by default.
+- Respects retry limits and timeouts to be polite to servers.
+- Auto-detects domain-based folder structure or uses custom folder names.
+
+## License
+
+MIT License - see LICENSE file for details.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
