@@ -2,11 +2,25 @@ import os
 import sys
 import argparse
 import logging
+from urllib.parse import urlparse
 from docs_crawler.crawler import Crawler
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def extract_subdomain(url):
+    """Extract subdomain from URL for file naming."""
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if hostname:
+        parts = hostname.split('.')
+        if len(parts) >= 2:
+            return parts[-2]
+        elif len(parts) == 1:
+            return parts[0]
+    return 'default'
 
 
 def main():
@@ -16,8 +30,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Crawl from sitemap
+  # Crawl from sitemap (tries sitemap first, falls back to recursive discovery)
   docs-crawler --base-url https://example.com
+
+  # Discover links only and save to file
+  docs-crawler --mode discover --base-url https://example.com
 
   # Crawl from a list of URLs in a file
   docs-crawler --mode list --file urls.txt
@@ -29,14 +46,19 @@ Examples:
 
     parser.add_argument(
         '--mode',
-        choices=['sitemap', 'list'],
+        choices=['sitemap', 'discover', 'list'],
         default='sitemap',
-        help="Source of URLs: 'sitemap' (default) or 'list' (text file)."
+        help="Mode: 'sitemap' (crawl, tries sitemap then recursive), 'discover' (find and save URLs), or 'list' (crawl from file)."
     )
 
     parser.add_argument(
         '--base-url',
         help="Base URL of the documentation site (e.g., https://example.com)"
+    )
+
+    parser.add_argument(
+        '--start-url',
+        help="Starting URL for recursive discovery (e.g., https://example.com/docs/)"
     )
 
     parser.add_argument(
@@ -50,6 +72,11 @@ Examples:
     )
 
     parser.add_argument(
+        '--output-file',
+        help="Output file for discovered URLs (used in discover mode, auto-generated if not specified)"
+    )
+
+    parser.add_argument(
         '--folder',
         help="Custom folder name under output directory (overrides auto-detection from domain)."
     )
@@ -60,14 +87,117 @@ Examples:
         help="Output directory for markdown files (default: output)"
     )
 
+    parser.add_argument(
+        '--path-filter',
+        default='/docs/',
+        help="Path pattern to filter links (default: /docs/)"
+    )
+
+    parser.add_argument(
+        '--max-depth',
+        type=int,
+        default=100,
+        help="Maximum number of URLs to discover in recursive mode (default: 100)"
+    )
+
     args = parser.parse_args()
 
     # Validate arguments
     urls = None
-    if args.mode == 'sitemap':
+
+    if args.mode == 'discover':
+        # Discover mode: find links and save to file
+        if not args.base_url and not args.start_url:
+            parser.error("--base-url or --start-url is required when mode is 'discover'")
+
+        crawler = Crawler(
+            base_url=args.base_url,
+            sitemap_url=args.sitemap_url,
+            output_dir=args.output_dir,
+            custom_folder=args.folder
+        )
+
+        try:
+            # Discover links
+            discovered_urls = crawler.discover_links(
+                start_url=args.start_url,
+                path_filter=args.path_filter,
+                max_depth=args.max_depth
+            )
+
+            if not discovered_urls:
+                logger.warning("No URLs discovered.")
+                sys.exit(0)
+
+            # Generate output filename
+            if args.output_file:
+                output_file = args.output_file
+            else:
+                # Use subdomain-based naming
+                base = args.base_url or args.start_url
+                subdomain = extract_subdomain(base)
+                output_file = f"{subdomain}_urls.txt"
+
+            # Show discovered URLs and ask for confirmation
+            logger.info(f"\nDiscovered {len(discovered_urls)} URLs:")
+            print("\nFirst 10 URLs:")
+            for url in discovered_urls[:10]:
+                print(f"  - {url}")
+            if len(discovered_urls) > 10:
+                print(f"  ... and {len(discovered_urls) - 10} more")
+
+            # Ask for confirmation
+            print(f"\nSave URLs to '{output_file}'? [Y/n]: ", end='', flush=True)
+            response = input().strip().lower()
+
+            if response in ['', 'y', 'yes']:
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    for url in discovered_urls:
+                        f.write(f"{url}\n")
+                logger.info(f"Saved {len(discovered_urls)} URLs to {output_file}")
+                logger.info(f"You can now run: docs-crawler --mode list --file {output_file}")
+            else:
+                logger.info("Cancelled. URLs not saved.")
+
+        except KeyboardInterrupt:
+            logger.info("\nDiscovery interrupted by user.")
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"Error during discovery: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+
+    elif args.mode == 'sitemap':
+        # Sitemap mode (with fallback to recursive discovery)
         if not args.base_url and not args.sitemap_url:
             parser.error("--base-url or --sitemap-url is required when mode is 'sitemap'")
+
+        crawler = Crawler(
+            base_url=args.base_url,
+            sitemap_url=args.sitemap_url,
+            output_dir=args.output_dir,
+            custom_folder=args.folder
+        )
+
+        try:
+            crawler.run(
+                urls=None,
+                start_url=args.start_url,
+                path_filter=args.path_filter,
+                max_depth=args.max_depth
+            )
+        except KeyboardInterrupt:
+            logger.info("\nCrawling interrupted by user.")
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"Error during crawling: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+
     elif args.mode == 'list':
+        # List mode: crawl from file
         if not args.file:
             parser.error("--file is required when mode is 'list'")
 
@@ -83,22 +213,28 @@ Examples:
             logger.error(f"Failed to read file {args.file}: {e}")
             sys.exit(1)
 
-    # Create and run crawler
-    crawler = Crawler(
-        base_url=args.base_url,
-        sitemap_url=args.sitemap_url,
-        output_dir=args.output_dir,
-        custom_folder=args.folder
-    )
+        # Determine base_url from first URL if not provided
+        if not args.base_url and urls:
+            parsed = urlparse(urls[0])
+            args.base_url = f"{parsed.scheme}://{parsed.netloc}"
 
-    try:
-        crawler.run(urls)
-    except KeyboardInterrupt:
-        logger.info("\nCrawling interrupted by user.")
-        sys.exit(0)
-    except Exception as e:
-        logger.error(f"Error during crawling: {e}")
-        sys.exit(1)
+        crawler = Crawler(
+            base_url=args.base_url,
+            sitemap_url=args.sitemap_url,
+            output_dir=args.output_dir,
+            custom_folder=args.folder
+        )
+
+        try:
+            crawler.run(urls=urls)
+        except KeyboardInterrupt:
+            logger.info("\nCrawling interrupted by user.")
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"Error during crawling: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
 
 
 if __name__ == "__main__":

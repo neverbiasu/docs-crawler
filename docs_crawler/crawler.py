@@ -1,6 +1,6 @@
 import os
 import logging
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
 from playwright.sync_api import sync_playwright
@@ -10,6 +10,7 @@ import requests
 # Configuration
 MAX_RETRIES = 3
 PAGE_LOAD_TIMEOUT = 30000  # 30秒超时
+MAX_DISCOVERY_DEPTH = 10  # 最大递归深度
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -85,6 +86,142 @@ class Crawler:
         except Exception as e:
             logger.error(f"Failed to fetch sitemap: {e}")
             return []
+
+    def extract_links_from_page(self, page, current_url, path_filter='/docs/'):
+        """
+        Extract all links from a page that match the path filter.
+
+        Args:
+            page: Playwright page object
+            current_url: Current page URL
+            path_filter: Path pattern to filter links (default: '/docs/')
+
+        Returns:
+            Set of discovered URLs
+        """
+        links = set()
+
+        try:
+            # Get all <a> tags
+            link_elements = page.query_selector_all('a[href]')
+
+            parsed_base = urlparse(current_url)
+            base_domain = parsed_base.netloc
+
+            for element in link_elements:
+                href = element.get_attribute('href')
+                if not href:
+                    continue
+
+                # Convert relative URLs to absolute
+                absolute_url = urljoin(current_url, href)
+                parsed_url = urlparse(absolute_url)
+
+                # Filter: same domain and contains path_filter
+                if (parsed_url.netloc == base_domain and
+                    path_filter in parsed_url.path):
+                    # Remove fragment and normalize
+                    clean_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+                    if parsed_url.query:
+                        clean_url += f"?{parsed_url.query}"
+                    links.add(clean_url)
+
+        except Exception as e:
+            logger.warning(f"Error extracting links from {current_url}: {e}")
+
+        return links
+
+    def discover_links_recursive(self, start_url, path_filter='/docs/', max_depth=MAX_DISCOVERY_DEPTH):
+        """
+        Recursively discover documentation links starting from a URL.
+
+        Args:
+            start_url: Starting URL for discovery
+            path_filter: Path pattern to filter links (default: '/docs/')
+            max_depth: Maximum number of URLs to discover
+
+        Returns:
+            List of discovered URLs
+        """
+        discovered = set()
+        to_visit = {start_url}
+        visited = set()
+
+        logger.info(f"Starting recursive link discovery from {start_url}")
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+            page = context.new_page()
+
+            pbar = tqdm(desc="Discovering links", unit="page")
+
+            while to_visit and len(discovered) < max_depth:
+                current_url = to_visit.pop()
+
+                if current_url in visited:
+                    continue
+
+                visited.add(current_url)
+                discovered.add(current_url)
+                pbar.update(1)
+                pbar.set_postfix({"found": len(discovered), "queue": len(to_visit)})
+
+                try:
+                    # Load the page
+                    page.goto(current_url, timeout=PAGE_LOAD_TIMEOUT)
+                    page.wait_for_load_state('networkidle', timeout=15000)
+
+                    # Extract links from this page
+                    new_links = self.extract_links_from_page(page, current_url, path_filter)
+
+                    # Add new unvisited links to the queue
+                    for link in new_links:
+                        if link not in visited and link not in discovered:
+                            to_visit.add(link)
+
+                except Exception as e:
+                    logger.warning(f"Failed to process {current_url}: {e}")
+
+            pbar.close()
+            browser.close()
+
+        logger.info(f"Discovery complete. Found {len(discovered)} URLs")
+        return sorted(list(discovered))
+
+    def discover_links(self, start_url=None, path_filter='/docs/', max_depth=MAX_DISCOVERY_DEPTH):
+        """
+        Discover documentation links. Try sitemap first, fallback to recursive discovery.
+
+        Args:
+            start_url: Starting URL for recursive discovery (if sitemap fails)
+            path_filter: Path pattern to filter links (default: '/docs/')
+            max_depth: Maximum number of URLs to discover in recursive mode
+
+        Returns:
+            List of discovered URLs
+        """
+        # Try sitemap first
+        urls = self.fetch_sitemap()
+
+        if urls:
+            logger.info(f"Successfully found {len(urls)} URLs from sitemap")
+            return urls
+
+        # Fallback to recursive discovery
+        logger.info("Sitemap not available, using recursive link discovery")
+
+        if not start_url:
+            # Try to construct a starting URL
+            if self.base_url:
+                start_url = f"{self.base_url}/docs/" if not self.base_url.endswith('/') else f"{self.base_url}docs/"
+            else:
+                logger.error("No start URL provided and no base_url configured")
+                return []
+
+        return self.discover_links_recursive(start_url, path_filter, max_depth)
 
     def process_url_with_playwright(self, page, url):
         """Downloads and converts a single URL using Playwright."""
@@ -225,15 +362,18 @@ class Crawler:
                 f.write(f"| {item['title']} | [{item['url']}]({item['url']}) | [{item['file']}]({item['file']}) |\n")
         logger.info(f"Generated index at {index_path}")
 
-    def run(self, urls=None):
+    def run(self, urls=None, start_url=None, path_filter='/docs/', max_depth=MAX_DISCOVERY_DEPTH):
         """
         Run the crawler.
 
         Args:
-            urls: List of URLs to crawl. If None, fetches from sitemap.
+            urls: List of URLs to crawl. If None, uses discover_links method.
+            start_url: Starting URL for recursive discovery (if needed)
+            path_filter: Path pattern to filter links (default: '/docs/')
+            max_depth: Maximum number of URLs to discover in recursive mode
         """
         if urls is None:
-            urls = self.fetch_sitemap()
+            urls = self.discover_links(start_url, path_filter, max_depth)
 
         if not urls:
             logger.warning("No URLs found to process.")
