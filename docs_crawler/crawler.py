@@ -10,7 +10,7 @@ import requests
 # Configuration
 MAX_RETRIES = 3
 PAGE_LOAD_TIMEOUT = 30000  # 30秒超时
-MAX_DISCOVERY_DEPTH = 10  # 最大递归深度
+MAX_DISCOVERY_DEPTH = 1000  # 最大递归深度（默认值，可通过参数覆盖）
 
 # Setup logging
 logger = logging.getLogger(__name__)
