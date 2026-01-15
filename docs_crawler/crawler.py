@@ -1,9 +1,11 @@
 import os
 import logging
+import asyncio
 from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
 from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
 from tqdm import tqdm
 import requests
 
@@ -11,6 +13,7 @@ import requests
 MAX_RETRIES = 3
 PAGE_LOAD_TIMEOUT = 30000  # 30秒超时
 MAX_DISCOVERY_DEPTH = 1000  # 最大递归深度（默认值，可通过参数覆盖）
+DEFAULT_CONCURRENCY = 5  # 默认并发数
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -31,9 +34,9 @@ class Crawler:
         self.sitemap_url = sitemap_url or (f"{base_url}/sitemap.xml" if base_url else None)
         self.output_dir = output_dir
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (compatible; Bot/1.0; +http://example.com)'
-        })
+        self.session.headers.update(
+            {"User-Agent": "Mozilla/5.0 (compatible; Bot/1.0; +http://example.com)"}
+        )
         self.results = []
         self.subdomain = None
         self.custom_folder = custom_folder
@@ -46,7 +49,7 @@ class Crawler:
         parsed = urlparse(url)
         hostname = parsed.hostname
         if hostname:
-            parts = hostname.split('.')
+            parts = hostname.split(".")
 
             # 提取二级域名（主域名）的逻辑：
             # code.claude.com -> parts[-2] = 'claude'
@@ -61,7 +64,7 @@ class Crawler:
                 # 只有一个部分，如 localhost
                 return parts[0]
 
-        return 'default'
+        return "default"
 
     def fetch_sitemap(self):
         """Fetches and parses the sitemap to extract /docs/ URLs."""
@@ -76,18 +79,18 @@ class Crawler:
 
             # XML parsing (using lxml if available, else html.parser)
             # sitemap files are often just text/xml
-            soup = BeautifulSoup(response.content, 'xml')
-            urls = [loc.text for loc in soup.find_all('loc')]
+            soup = BeautifulSoup(response.content, "xml")
+            urls = [loc.text for loc in soup.find_all("loc")]
 
             # Filter for /docs/
-            doc_urls = [url for url in urls if '/docs/' in urlparse(url).path]
+            doc_urls = [url for url in urls if "/docs/" in urlparse(url).path]
             logger.info(f"Found {len(doc_urls)} pages under /docs/")
             return doc_urls
         except Exception as e:
             logger.error(f"Failed to fetch sitemap: {e}")
             return []
 
-    def extract_links_from_page(self, page, current_url, path_filter='/docs/'):
+    def extract_links_from_page(self, page, current_url, path_filter="/docs/"):
         """
         Extract all links from a page that match the path filter.
 
@@ -103,13 +106,13 @@ class Crawler:
 
         try:
             # Get all <a> tags
-            link_elements = page.query_selector_all('a[href]')
+            link_elements = page.query_selector_all("a[href]")
 
             parsed_base = urlparse(current_url)
             base_domain = parsed_base.netloc
 
             for element in link_elements:
-                href = element.get_attribute('href')
+                href = element.get_attribute("href")
                 if not href:
                     continue
 
@@ -118,8 +121,7 @@ class Crawler:
                 parsed_url = urlparse(absolute_url)
 
                 # Filter: same domain and contains path_filter
-                if (parsed_url.netloc == base_domain and
-                    path_filter in parsed_url.path):
+                if parsed_url.netloc == base_domain and path_filter in parsed_url.path:
                     # Remove fragment and normalize
                     clean_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
                     if parsed_url.query:
@@ -131,7 +133,9 @@ class Crawler:
 
         return links
 
-    def discover_links_recursive(self, start_url, path_filter='/docs/', max_depth=MAX_DISCOVERY_DEPTH):
+    def discover_links_recursive(
+        self, start_url, path_filter="/docs/", max_depth=MAX_DISCOVERY_DEPTH
+    ):
         """
         Recursively discover documentation links starting from a URL.
 
@@ -152,7 +156,8 @@ class Crawler:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
-                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
             page = context.new_page()
 
@@ -172,7 +177,7 @@ class Crawler:
                 try:
                     # Load the page
                     page.goto(current_url, timeout=PAGE_LOAD_TIMEOUT)
-                    page.wait_for_load_state('networkidle', timeout=15000)
+                    page.wait_for_load_state("networkidle", timeout=15000)
 
                     # Extract links from this page
                     new_links = self.extract_links_from_page(page, current_url, path_filter)
@@ -191,7 +196,7 @@ class Crawler:
         logger.info(f"Discovery complete. Found {len(discovered)} URLs")
         return sorted(list(discovered))
 
-    def discover_links(self, start_url=None, path_filter='/docs/', max_depth=MAX_DISCOVERY_DEPTH):
+    def discover_links(self, start_url=None, path_filter="/docs/", max_depth=MAX_DISCOVERY_DEPTH):
         """
         Discover documentation links. Try sitemap first, fallback to recursive discovery.
 
@@ -216,7 +221,11 @@ class Crawler:
         if not start_url:
             # Try to construct a starting URL
             if self.base_url:
-                start_url = f"{self.base_url}/docs/" if not self.base_url.endswith('/') else f"{self.base_url}docs/"
+                start_url = (
+                    f"{self.base_url}/docs/"
+                    if not self.base_url.endswith("/")
+                    else f"{self.base_url}docs/"
+                )
             else:
                 logger.error("No start URL provided and no base_url configured")
                 return []
@@ -237,7 +246,7 @@ class Crawler:
             self.output_subdir = os.path.join(self.output_dir, self.subdomain)
             os.makedirs(self.output_subdir, exist_ok=True)
 
-        slug = urlparse(url).path.strip('/').replace('/', '_')
+        slug = urlparse(url).path.strip("/").replace("/", "_")
         if not slug:
             slug = "index"
         filename = f"{slug}.md"
@@ -255,11 +264,11 @@ class Crawler:
                 # 尝试等待文章内容或主区域
                 try:
                     page.wait_for_selector('article, main, [role="main"]', timeout=10000)
-                except:
+                except Exception:
                     pass
 
                 # 额外等待确保JS完全渲染
-                page.wait_for_load_state('networkidle', timeout=15000)
+                page.wait_for_load_state("networkidle", timeout=15000)
 
                 # 获取渲染后的HTML
                 content = page.content()
@@ -275,10 +284,10 @@ class Crawler:
                 markdown_content, page_title = self.convert_to_markdown(content)
                 title = page_title
 
-                with open(filepath, 'w', encoding='utf-8') as f:
+                with open(filepath, "w", encoding="utf-8") as f:
                     f.write(markdown_content)
 
-                return {'title': title, 'url': url, 'file': filename}
+                return {"title": title, "url": url, "file": filename}
             except Exception as e:
                 logger.error(f"Error converting {url}: {e}")
 
@@ -286,25 +295,32 @@ class Crawler:
 
     def convert_to_markdown(self, html_content):
         """Extracts content and converts to Markdown."""
-        soup = BeautifulSoup(html_content, 'html.parser')
+        soup = BeautifulSoup(html_content, "html.parser")
 
         # Extract title
-        title_tag = soup.find('title')
+        title_tag = soup.find("title")
         title = title_tag.text.strip() if title_tag else "No Title"
 
         # Remove unwanted elements
-        for tag in soup.find_all(['nav', 'footer', 'script', 'style', 'noscript', 'iframe', 'header']):
+        for tag in soup.find_all(
+            ["nav", "footer", "script", "style", "noscript", "iframe", "header"]
+        ):
             tag.decompose()
 
         # Common classes/IDs for unwanted elements
         unwanted_selectors = [
-            '.sidebar', '#sidebar',
-            '.toc', '#toc',
-            '.breadcrumbs', '.breadcrumb',
-            '.footer', '.header', '.nav',
+            ".sidebar",
+            "#sidebar",
+            ".toc",
+            "#toc",
+            ".breadcrumbs",
+            ".breadcrumb",
+            ".footer",
+            ".header",
+            ".nav",
             '[role="navigation"]',
-            '.navigation',
-            '.menu'
+            ".navigation",
+            ".menu",
         ]
         for selector in unwanted_selectors:
             for element in soup.select(selector):
@@ -315,13 +331,13 @@ class Crawler:
 
         # 尝试找到文档内容区域
         content_selectors = [
-            'article',
+            "article",
             '[role="main"]',
-            '.docs-content',
-            '.content',
-            '.markdown-body',
-            'main',
-            '.main-content'
+            ".docs-content",
+            ".content",
+            ".markdown-body",
+            "main",
+            ".main-content",
         ]
 
         for selector in content_selectors:
@@ -330,16 +346,16 @@ class Crawler:
                 break
 
         if not content_element:
-            content_element = soup.find('body')
+            content_element = soup.find("body")
 
         if not content_element:
             return "", title
 
         # Convert to Markdown
-        markdown = md(str(content_element), heading_style="ATX", strip=['img'])
+        markdown = md(str(content_element), heading_style="ATX", strip=["img"])
 
         # 清理多余的空行
-        lines = markdown.split('\n')
+        lines = markdown.split("\n")
         cleaned_lines = []
         prev_empty = False
         for line in lines:
@@ -349,20 +365,118 @@ class Crawler:
             cleaned_lines.append(line)
             prev_empty = is_empty
 
-        return '\n'.join(cleaned_lines).strip(), title
+        return "\n".join(cleaned_lines).strip(), title
 
     def generate_index(self):
         """Generates the index.md file."""
         index_path = os.path.join(self.output_subdir, "index.md")
-        with open(index_path, 'w', encoding='utf-8') as f:
+        with open(index_path, "w", encoding="utf-8") as f:
             f.write("# Documentation Index\n\n")
             f.write("| Title | Original URL | Local File |\n")
             f.write("|-------|--------------|------------|\n")
-            for item in sorted(self.results, key=lambda x: x['title']):
-                f.write(f"| {item['title']} | [{item['url']}]({item['url']}) | [{item['file']}]({item['file']}) |\n")
+            for item in sorted(self.results, key=lambda x: x["title"]):
+                title = item["title"]
+                url = item["url"]
+                file = item["file"]
+                f.write(f"| {title} | [{url}]({url}) | [{file}]({file}) |\n")
         logger.info(f"Generated index at {index_path}")
 
-    def run(self, urls=None, start_url=None, path_filter='/docs/', max_depth=MAX_DISCOVERY_DEPTH):
+    def _setup_output_dir(self, url):
+        """Setup output subdirectory based on URL or custom folder."""
+        if self.subdomain is None:
+            if self.custom_folder:
+                self.subdomain = self.custom_folder
+                logger.info(f"Using custom folder: {self.subdomain}")
+            else:
+                self.subdomain = self.extract_subdomain(url)
+                logger.info(f"Using auto-detected folder (domain): {self.subdomain}")
+            self.output_subdir = os.path.join(self.output_dir, self.subdomain)
+            os.makedirs(self.output_subdir, exist_ok=True)
+
+    async def _process_url_async(self, context, url, semaphore, pbar):
+        """Async version of process_url_with_playwright."""
+        async with semaphore:
+            page = await context.new_page()
+            try:
+                slug = urlparse(url).path.strip("/").replace("/", "_")
+                if not slug:
+                    slug = "index"
+                filename = f"{slug}.md"
+                filepath = os.path.join(self.output_subdir, filename)
+
+                content = None
+                title = None
+
+                for attempt in range(MAX_RETRIES):
+                    try:
+                        await page.goto(url, timeout=PAGE_LOAD_TIMEOUT)
+                        try:
+                            await page.wait_for_selector(
+                                'article, main, [role="main"]', timeout=10000
+                            )
+                        except Exception:
+                            pass
+                        await page.wait_for_load_state("networkidle", timeout=15000)
+                        content = await page.content()
+                        break
+                    except Exception as e:
+                        logger.warning(f"Attempt {attempt + 1} failed for {url}: {e}")
+                        if attempt == MAX_RETRIES - 1:
+                            logger.error(f"Failed to download {url} after {MAX_RETRIES} attempts")
+                            pbar.update(1)
+                            return None
+
+                if content:
+                    try:
+                        markdown_content, page_title = self.convert_to_markdown(content)
+                        title = page_title
+
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            f.write(markdown_content)
+
+                        pbar.update(1)
+                        return {"title": title, "url": url, "file": filename}
+                    except Exception as e:
+                        logger.error(f"Error converting {url}: {e}")
+
+                pbar.update(1)
+                return None
+            finally:
+                await page.close()
+
+    async def _run_async(self, urls, concurrency=DEFAULT_CONCURRENCY):
+        """Async implementation of the crawler."""
+        logger.info(
+            f"Starting concurrent download of {len(urls)} pages (concurrency={concurrency})..."
+        )
+
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+
+            pbar = tqdm(total=len(urls), unit="page")
+
+            tasks = [self._process_url_async(context, url, semaphore, pbar) for url in urls]
+            results = await asyncio.gather(*tasks)
+
+            pbar.close()
+            await browser.close()
+
+        self.results = [r for r in results if r is not None]
+
+    def run(
+        self,
+        urls=None,
+        start_url=None,
+        path_filter="/docs/",
+        max_depth=MAX_DISCOVERY_DEPTH,
+        concurrency=None,
+    ):
         """
         Run the crawler.
 
@@ -371,6 +485,7 @@ class Crawler:
             start_url: Starting URL for recursive discovery (if needed)
             path_filter: Path pattern to filter links (default: '/docs/')
             max_depth: Maximum number of URLs to discover in recursive mode
+            concurrency: Number of concurrent pages to process (default: 5, use 1 for sequential)
         """
         if urls is None:
             urls = self.discover_links(start_url, path_filter, max_depth)
@@ -379,23 +494,35 @@ class Crawler:
             logger.warning("No URLs found to process.")
             return
 
-        logger.info(f"Starting download of {len(urls)} pages using Playwright...")
+        # Setup output directory from first URL
+        self._setup_output_dir(urls[0])
 
-        with sync_playwright() as p:
-            # 启动浏览器
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
-                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        if concurrency is None:
+            concurrency = DEFAULT_CONCURRENCY
+
+        if concurrency == 1:
+            # Use original synchronous mode
+            logger.info(
+                f"Starting download of {len(urls)} pages using Playwright (sequential)..."
             )
-            page = context.new_page()
 
-            # 使用 tqdm 显示进度
-            for url in tqdm(urls, unit="page"):
-                result = self.process_url_with_playwright(page, url)
-                if result:
-                    self.results.append(result)
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+                page = context.new_page()
 
-            browser.close()
+                for url in tqdm(urls, unit="page"):
+                    result = self.process_url_with_playwright(page, url)
+                    if result:
+                        self.results.append(result)
+
+                browser.close()
+        else:
+            # Use async concurrent mode
+            asyncio.run(self._run_async(urls, concurrency))
 
         self.generate_index()
         logger.info("Done.")
