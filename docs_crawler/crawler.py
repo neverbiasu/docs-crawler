@@ -38,6 +38,7 @@ class Crawler:
             {"User-Agent": "Mozilla/5.0 (compatible; Bot/1.0; +http://example.com)"}
         )
         self.results = []
+        self.failed = []  # 记录失败的 URL 及原因
         self.subdomain = None
         self.custom_folder = custom_folder
 
@@ -276,8 +277,9 @@ class Crawler:
             except Exception as e:
                 logger.warning(f"Attempt {attempt + 1} failed for {url}: {e}")
                 if attempt == MAX_RETRIES - 1:
+                    error_msg = str(e)
                     logger.error(f"Failed to download {url} after {MAX_RETRIES} attempts")
-                    return None
+                    return {"url": url, "error": error_msg, "failed": True}
 
         if content:
             try:
@@ -289,9 +291,11 @@ class Crawler:
 
                 return {"title": title, "url": url, "file": filename}
             except Exception as e:
+                error_msg = str(e)
                 logger.error(f"Error converting {url}: {e}")
+                return {"url": url, "error": error_msg, "failed": True}
 
-        return None
+        return {"url": url, "error": "Empty content", "failed": True}
 
     def convert_to_markdown(self, html_content):
         """Extracts content and converts to Markdown."""
@@ -381,6 +385,36 @@ class Crawler:
                 f.write(f"| {title} | [{url}]({url}) | [{file}]({file}) |\n")
         logger.info(f"Generated index at {index_path}")
 
+    def generate_failure_report(self):
+        """Generates a failure report if there are failed URLs."""
+        if not self.failed:
+            return
+
+        report_path = os.path.join(self.output_subdir, "failed_urls.txt")
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write("# Failed URLs Report\n\n")
+            f.write(f"Total failed: {len(self.failed)}\n\n")
+            for item in self.failed:
+                url = item["url"]
+                error = item.get("error", "Unknown error")
+                f.write(f"URL: {url}\n")
+                f.write(f"Error: {error}\n\n")
+        logger.warning(f"Generated failure report at {report_path}")
+
+    def _print_summary(self, total_urls):
+        """Print crawl summary statistics."""
+        success_count = len(self.results)
+        failed_count = len(self.failed)
+        logger.info("=" * 50)
+        logger.info("Crawl Summary:")
+        logger.info(f"  Total URLs: {total_urls}")
+        logger.info(f"  Successful: {success_count}")
+        logger.info(f"  Failed: {failed_count}")
+        if total_urls > 0:
+            success_rate = (success_count / total_urls) * 100
+            logger.info(f"  Success Rate: {success_rate:.1f}%")
+        logger.info("=" * 50)
+
     def _setup_output_dir(self, url):
         """Setup output subdirectory based on URL or custom folder."""
         if self.subdomain is None:
@@ -422,9 +456,10 @@ class Crawler:
                     except Exception as e:
                         logger.warning(f"Attempt {attempt + 1} failed for {url}: {e}")
                         if attempt == MAX_RETRIES - 1:
+                            error_msg = str(e)
                             logger.error(f"Failed to download {url} after {MAX_RETRIES} attempts")
                             pbar.update(1)
-                            return None
+                            return {"url": url, "error": error_msg, "failed": True}
 
                 if content:
                     try:
@@ -437,10 +472,13 @@ class Crawler:
                         pbar.update(1)
                         return {"title": title, "url": url, "file": filename}
                     except Exception as e:
+                        error_msg = str(e)
                         logger.error(f"Error converting {url}: {e}")
+                        pbar.update(1)
+                        return {"url": url, "error": error_msg, "failed": True}
 
                 pbar.update(1)
-                return None
+                return {"url": url, "error": "Empty content", "failed": True}
             finally:
                 await page.close()
 
@@ -467,7 +505,13 @@ class Crawler:
             pbar.close()
             await browser.close()
 
-        self.results = [r for r in results if r is not None]
+        # 分离成功和失败的结果
+        for r in results:
+            if r is not None:
+                if r.get("failed"):
+                    self.failed.append(r)
+                else:
+                    self.results.append(r)
 
     def run(
         self,
@@ -502,9 +546,7 @@ class Crawler:
 
         if concurrency == 1:
             # Use original synchronous mode
-            logger.info(
-                f"Starting download of {len(urls)} pages using Playwright (sequential)..."
-            )
+            logger.info(f"Starting download of {len(urls)} pages using Playwright (sequential)...")
 
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
@@ -517,7 +559,10 @@ class Crawler:
                 for url in tqdm(urls, unit="page"):
                     result = self.process_url_with_playwright(page, url)
                     if result:
-                        self.results.append(result)
+                        if result.get("failed"):
+                            self.failed.append(result)
+                        else:
+                            self.results.append(result)
 
                 browser.close()
         else:
@@ -525,4 +570,6 @@ class Crawler:
             asyncio.run(self._run_async(urls, concurrency))
 
         self.generate_index()
+        self.generate_failure_report()
+        self._print_summary(len(urls))
         logger.info("Done.")
