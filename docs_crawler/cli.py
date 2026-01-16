@@ -4,6 +4,7 @@ import argparse
 import logging
 from urllib.parse import urlparse
 from docs_crawler.crawler import Crawler
+from docs_crawler.config import load_config, find_config_file, generate_example_config
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -101,7 +102,56 @@ Examples:
         help="Number of concurrent pages to process (default: 5, use 1 for sequential)",
     )
 
+    parser.add_argument(
+        "--config",
+        help="Path to YAML config file (auto-detects docs-crawler.yaml if not specified)",
+    )
+
+    parser.add_argument(
+        "--init-config",
+        action="store_true",
+        help="Generate an example config file (docs-crawler.yaml) and exit",
+    )
+
     args = parser.parse_args()
+
+    # Handle --init-config
+    if args.init_config:
+        generate_example_config()
+        print("Generated docs-crawler.yaml")
+        sys.exit(0)
+
+    # Load config file if specified or auto-detect
+    config = {}
+    config_path = args.config or find_config_file()
+    if config_path:
+        try:
+            config = load_config(config_path)
+        except Exception as e:
+            logger.error(f"Failed to load config: {e}")
+            sys.exit(1)
+
+    # CLI args override config file (use config values as defaults)
+    if not args.base_url and config.get("base_url"):
+        args.base_url = config["base_url"]
+    if not args.start_url and config.get("start_url"):
+        args.start_url = config["start_url"]
+    if not args.sitemap_url and config.get("sitemap_url"):
+        args.sitemap_url = config["sitemap_url"]
+    if not args.file and config.get("file"):
+        args.file = config["file"]
+    if not args.folder and config.get("folder"):
+        args.folder = config["folder"]
+    if args.output_dir == "output" and config.get("output_dir"):
+        args.output_dir = config["output_dir"]
+    if args.path_filter == "/docs/" and config.get("path_filter"):
+        args.path_filter = config["path_filter"]
+    if args.max_depth == 100 and config.get("max_depth"):
+        args.max_depth = config["max_depth"]
+    if args.concurrency == 5 and config.get("concurrency"):
+        args.concurrency = config["concurrency"]
+    if args.mode == "sitemap" and config.get("mode"):
+        args.mode = config["mode"]
 
     # Validate arguments
     urls = None
