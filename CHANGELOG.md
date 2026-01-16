@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-01-16
+
+### Added
+
+#### Error Handling
+- **Failure Reports**: Generate `failed_urls.txt` with failed URLs and error messages
+- **Crawl Summary**: Display success/fail counts and success rate after crawl
+- **Structured Error Info**: Return detailed error information for failed pages
+
+#### Configuration File Support
+- **YAML Config**: Support for `docs-crawler.yaml` configuration files
+- **Auto-detect Config**: Automatically find config file in current directory
+- **New CLI Options**:
+  - `--config` - Specify path to YAML config file
+  - `--init-config` - Generate example config file
+- **CLI Override**: Command line arguments override config file values
+
+### Dependencies
+- Added `pyyaml` for YAML config parsing
+
+---
+
 ## [0.2.0] - 2026-01-15
 
 ### Added
@@ -111,11 +133,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned for v0.3.0
-- Better error handling with failure reports
 - Incremental updates (only crawl changed pages)
 - Progress save/resume functionality
+- Content filtering with custom CSS selectors
 
 ---
 
+[0.2.1]: https://github.com/neverbiasu/docs-crawler/releases/tag/v0.2.1
 [0.2.0]: https://github.com/neverbiasu/docs-crawler/releases/tag/v0.2.0
 [0.1.0]: https://github.com/neverbiasu/docs-crawler/releases/tag/v0.1.0
