@@ -8,13 +8,13 @@ from playwright.sync_api import sync_playwright
 from playwright.async_api import async_playwright
 from tqdm import tqdm
 import requests
-from docs_crawler.cache import CrawlCache
+from docs_crawler.cache import CrawlCache, CrawlProgress
 
 # Configuration
 MAX_RETRIES = 3
-PAGE_LOAD_TIMEOUT = 30000  # 30秒超时
-MAX_DISCOVERY_DEPTH = 1000  # 最大递归深度（默认值，可通过参数覆盖）
-DEFAULT_CONCURRENCY = 5  # 默认并发数
+PAGE_LOAD_TIMEOUT = 30000  # 30 seconds timeout
+MAX_DISCOVERY_DEPTH = 1000
+DEFAULT_CONCURRENCY = 5
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -39,11 +39,12 @@ class Crawler:
             {"User-Agent": "Mozilla/5.0 (compatible; Bot/1.0; +http://example.com)"}
         )
         self.results = []
-        self.failed = []  # 记录失败的 URL 及原因
-        self.skipped = []  # 记录跳过的 URL（未变化）
+        self.failed = []  # Track failed URLs with error messages
+        self.skipped = []  # Track skipped URLs (unchanged)
         self.subdomain = None
         self.custom_folder = custom_folder
-        self.cache = None  # 延迟初始化，等 output_subdir 确定后
+        self.cache = None  # Lazy init after output_subdir is set
+        self.progress = None  # Progress tracker
 
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
@@ -55,17 +56,9 @@ class Crawler:
         if hostname:
             parts = hostname.split(".")
 
-            # 提取二级域名（主域名）的逻辑：
-            # code.claude.com -> parts[-2] = 'claude'
-            # antigravity.google -> parts[-2] = 'antigravity'
-            # example.com -> parts[-2] = 'example'
-            # localhost -> parts[-1] = 'localhost'
-
             if len(parts) >= 2:
-                # 取倒数第二个部分作为二级域名
                 return parts[-2]
             elif len(parts) == 1:
-                # 只有一个部分，如 localhost
                 return parts[0]
 
         return "default"
@@ -238,7 +231,6 @@ class Crawler:
 
     def process_url_with_playwright(self, page, url, incremental=False):
         """Downloads and converts a single URL using Playwright."""
-        # 如果还没有设置subdomain，从当前URL提取或使用custom_folder
         if self.subdomain is None:
             if self.custom_folder:
                 self.subdomain = self.custom_folder
@@ -246,7 +238,6 @@ class Crawler:
             else:
                 self.subdomain = self.extract_subdomain(url)
                 logger.info(f"Using auto-detected folder (domain): {self.subdomain}")
-            # 创建子文件夹
             self.output_subdir = os.path.join(self.output_dir, self.subdomain)
             os.makedirs(self.output_subdir, exist_ok=True)
 
@@ -261,20 +252,15 @@ class Crawler:
 
         for attempt in range(MAX_RETRIES):
             try:
-                # 导航到页面
                 page.goto(url, timeout=PAGE_LOAD_TIMEOUT)
 
-                # 等待主内容加载完成
-                # 尝试等待文章内容或主区域
                 try:
                     page.wait_for_selector('article, main, [role="main"]', timeout=10000)
                 except Exception:
                     pass
 
-                # 额外等待确保JS完全渲染
                 page.wait_for_load_state("networkidle", timeout=15000)
 
-                # 获取渲染后的HTML
                 content = page.content()
                 break
             except Exception as e:
@@ -343,10 +329,8 @@ class Crawler:
             for element in soup.select(selector):
                 element.decompose()
 
-        # Prioritize content extraction - 尝试更具体的选择器
         content_element = None
 
-        # 尝试找到文档内容区域
         content_selectors = [
             "article",
             '[role="main"]',
@@ -368,10 +352,8 @@ class Crawler:
         if not content_element:
             return "", title
 
-        # Convert to Markdown
         markdown = md(str(content_element), heading_style="ATX", strip=["img"])
 
-        # 清理多余的空行
         lines = markdown.split("\n")
         cleaned_lines = []
         prev_empty = False
@@ -537,7 +519,6 @@ class Crawler:
             pbar.close()
             await browser.close()
 
-        # 分离成功、失败和跳过的结果
         for r in results:
             if r is not None:
                 if r.get("failed"):

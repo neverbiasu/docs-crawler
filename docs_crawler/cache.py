@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 CACHE_VERSION = 1
 CACHE_FILENAME = ".docs-crawler-cache.json"
+PROGRESS_FILENAME = ".docs-crawler-progress.json"
 
 
 class CrawlCache:
@@ -135,3 +136,129 @@ class CrawlCache:
         """Clear all cache data."""
         self.data = {"version": CACHE_VERSION, "pages": {}}
         logger.info("Cache cleared")
+
+
+class CrawlProgress:
+    """
+    Manages crawl progress for resume functionality.
+
+    Stores:
+    - All URLs to crawl
+    - Completed URLs
+    - Failed URLs
+    - Crawl start time
+    """
+
+    def __init__(self, progress_dir):
+        """
+        Initialize progress tracker.
+
+        Args:
+            progress_dir: Directory to store the progress file
+        """
+        self.progress_dir = progress_dir
+        self.progress_file = os.path.join(progress_dir, PROGRESS_FILENAME)
+        self.data = None
+
+    def exists(self):
+        """Check if a progress file exists."""
+        return os.path.exists(self.progress_file)
+
+    def load(self):
+        """Load progress from disk."""
+        if not self.exists():
+            return None
+
+        try:
+            with open(self.progress_file, "r", encoding="utf-8") as f:
+                self.data = json.load(f)
+            logger.info(f"Loaded progress: {len(self.data.get('completed', []))} completed, "
+                        f"{len(self.data.get('pending', []))} pending")
+            return self.data
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Failed to load progress: {e}")
+            return None
+
+    def start(self, urls):
+        """
+        Start a new crawl session.
+
+        Args:
+            urls: List of URLs to crawl
+        """
+        self.data = {
+            "started_at": datetime.now().isoformat(),
+            "total": len(urls),
+            "pending": list(urls),
+            "completed": [],
+            "failed": [],
+        }
+        self.save()
+        logger.info(f"Started new crawl session with {len(urls)} URLs")
+
+    def save(self):
+        """Save progress to disk."""
+        if self.data is None:
+            return
+
+        os.makedirs(self.progress_dir, exist_ok=True)
+        try:
+            with open(self.progress_file, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, indent=2, ensure_ascii=False)
+        except IOError as e:
+            logger.error(f"Failed to save progress: {e}")
+
+    def mark_completed(self, url):
+        """Mark a URL as completed."""
+        if self.data is None:
+            return
+
+        if url in self.data["pending"]:
+            self.data["pending"].remove(url)
+        if url not in self.data["completed"]:
+            self.data["completed"].append(url)
+
+    def mark_failed(self, url, error=None):
+        """Mark a URL as failed."""
+        if self.data is None:
+            return
+
+        if url in self.data["pending"]:
+            self.data["pending"].remove(url)
+        if url not in self.data["failed"]:
+            self.data["failed"].append({"url": url, "error": str(error) if error else None})
+
+    def get_pending_urls(self):
+        """Get list of pending URLs."""
+        if self.data is None:
+            return []
+        return self.data.get("pending", [])
+
+    def get_stats(self):
+        """Get progress statistics."""
+        if self.data is None:
+            return None
+
+        return {
+            "total": self.data.get("total", 0),
+            "completed": len(self.data.get("completed", [])),
+            "failed": len(self.data.get("failed", [])),
+            "pending": len(self.data.get("pending", [])),
+            "started_at": self.data.get("started_at"),
+        }
+
+    def is_complete(self):
+        """Check if all URLs have been processed."""
+        if self.data is None:
+            return True
+        return len(self.data.get("pending", [])) == 0
+
+    def clear(self):
+        """Clear progress file."""
+        if self.exists():
+            try:
+                os.remove(self.progress_file)
+                logger.info("Progress file cleared")
+            except IOError as e:
+                logger.error(f"Failed to clear progress file: {e}")
+        self.data = None
