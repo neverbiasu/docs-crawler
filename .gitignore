@@ -151,3 +151,4 @@ docs/
 *.txt
 !requirements.txt
 CLAUDE.md
+.worktrees/
