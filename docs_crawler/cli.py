@@ -113,6 +113,18 @@ Examples:
         help="Generate an example config file (docs-crawler.yaml) and exit",
     )
 
+    parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help="Only crawl pages that have changed since last crawl (uses content hash)",
+    )
+
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force re-crawl all pages, ignoring cache (opposite of --incremental)",
+    )
+
     args = parser.parse_args()
 
     # Handle --init-config
@@ -152,6 +164,12 @@ Examples:
         args.concurrency = config["concurrency"]
     if args.mode == "sitemap" and config.get("mode"):
         args.mode = config["mode"]
+    if not args.incremental and config.get("incremental"):
+        args.incremental = config["incremental"]
+
+    # --force overrides --incremental
+    if args.force:
+        args.incremental = False
 
     # Validate arguments
     urls = None
@@ -237,6 +255,7 @@ Examples:
                 path_filter=args.path_filter,
                 max_depth=args.max_depth,
                 concurrency=args.concurrency,
+                incremental=args.incremental,
             )
         except KeyboardInterrupt:
             logger.info("\nCrawling interrupted by user.")
@@ -278,7 +297,7 @@ Examples:
         )
 
         try:
-            crawler.run(urls=urls, concurrency=args.concurrency)
+            crawler.run(urls=urls, concurrency=args.concurrency, incremental=args.incremental)
         except KeyboardInterrupt:
             logger.info("\nCrawling interrupted by user.")
             sys.exit(0)

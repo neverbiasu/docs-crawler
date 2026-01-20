@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "docs-crawler"
-version = "0.2.1"
+version = "0.3.0"
 description = "A documentation crawler that converts web documentation to Markdown format"
 authors = ["nev4rb14su"]
 readme = "README.md"

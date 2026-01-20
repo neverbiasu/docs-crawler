@@ -8,6 +8,7 @@ from playwright.sync_api import sync_playwright
 from playwright.async_api import async_playwright
 from tqdm import tqdm
 import requests
+from docs_crawler.cache import CrawlCache
 
 # Configuration
 MAX_RETRIES = 3
@@ -39,8 +40,10 @@ class Crawler:
         )
         self.results = []
         self.failed = []  # 记录失败的 URL 及原因
+        self.skipped = []  # 记录跳过的 URL（未变化）
         self.subdomain = None
         self.custom_folder = custom_folder
+        self.cache = None  # 延迟初始化，等 output_subdir 确定后
 
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
@@ -233,7 +236,7 @@ class Crawler:
 
         return self.discover_links_recursive(start_url, path_filter, max_depth)
 
-    def process_url_with_playwright(self, page, url):
+    def process_url_with_playwright(self, page, url, incremental=False):
         """Downloads and converts a single URL using Playwright."""
         # 如果还没有设置subdomain，从当前URL提取或使用custom_folder
         if self.subdomain is None:
@@ -286,8 +289,18 @@ class Crawler:
                 markdown_content, page_title = self.convert_to_markdown(content)
                 title = page_title
 
+                # Check if content changed (incremental mode)
+                content_hash = CrawlCache.compute_hash(markdown_content)
+                if incremental and self.cache:
+                    if not self.cache.is_changed(url, content_hash):
+                        return {"url": url, "skipped": True, "reason": "unchanged"}
+
                 with open(filepath, "w", encoding="utf-8") as f:
                     f.write(markdown_content)
+
+                # Update cache
+                if self.cache:
+                    self.cache.update_page(url, content_hash)
 
                 return {"title": title, "url": url, "file": filename}
             except Exception as e:
@@ -405,10 +418,12 @@ class Crawler:
         """Print crawl summary statistics."""
         success_count = len(self.results)
         failed_count = len(self.failed)
+        skipped_count = len(self.skipped)
         logger.info("=" * 50)
         logger.info("Crawl Summary:")
         logger.info(f"  Total URLs: {total_urls}")
         logger.info(f"  Successful: {success_count}")
+        logger.info(f"  Skipped (unchanged): {skipped_count}")
         logger.info(f"  Failed: {failed_count}")
         if total_urls > 0:
             success_rate = (success_count / total_urls) * 100
@@ -426,8 +441,10 @@ class Crawler:
                 logger.info(f"Using auto-detected folder (domain): {self.subdomain}")
             self.output_subdir = os.path.join(self.output_dir, self.subdomain)
             os.makedirs(self.output_subdir, exist_ok=True)
+            # Initialize cache after output_subdir is set
+            self.cache = CrawlCache(self.output_subdir)
 
-    async def _process_url_async(self, context, url, semaphore, pbar):
+    async def _process_url_async(self, context, url, semaphore, pbar, incremental=False):
         """Async version of process_url_with_playwright."""
         async with semaphore:
             page = await context.new_page()
@@ -466,8 +483,19 @@ class Crawler:
                         markdown_content, page_title = self.convert_to_markdown(content)
                         title = page_title
 
+                        # Check if content changed (incremental mode)
+                        content_hash = CrawlCache.compute_hash(markdown_content)
+                        if incremental and self.cache:
+                            if not self.cache.is_changed(url, content_hash):
+                                pbar.update(1)
+                                return {"url": url, "skipped": True, "reason": "unchanged"}
+
                         with open(filepath, "w", encoding="utf-8") as f:
                             f.write(markdown_content)
+
+                        # Update cache
+                        if self.cache:
+                            self.cache.update_page(url, content_hash)
 
                         pbar.update(1)
                         return {"title": title, "url": url, "file": filename}
@@ -482,11 +510,13 @@ class Crawler:
             finally:
                 await page.close()
 
-    async def _run_async(self, urls, concurrency=DEFAULT_CONCURRENCY):
+    async def _run_async(self, urls, concurrency=DEFAULT_CONCURRENCY, incremental=False):
         """Async implementation of the crawler."""
         logger.info(
             f"Starting concurrent download of {len(urls)} pages (concurrency={concurrency})..."
         )
+        if incremental:
+            logger.info("Incremental mode: skipping unchanged pages")
 
         semaphore = asyncio.Semaphore(concurrency)
 
@@ -499,19 +529,27 @@ class Crawler:
 
             pbar = tqdm(total=len(urls), unit="page")
 
-            tasks = [self._process_url_async(context, url, semaphore, pbar) for url in urls]
+            tasks = [
+                self._process_url_async(context, url, semaphore, pbar, incremental) for url in urls
+            ]
             results = await asyncio.gather(*tasks)
 
             pbar.close()
             await browser.close()
 
-        # 分离成功和失败的结果
+        # 分离成功、失败和跳过的结果
         for r in results:
             if r is not None:
                 if r.get("failed"):
                     self.failed.append(r)
+                elif r.get("skipped"):
+                    self.skipped.append(r)
                 else:
                     self.results.append(r)
+
+        # Save cache after crawling
+        if self.cache:
+            self.cache.save()
 
     def run(
         self,
@@ -520,6 +558,7 @@ class Crawler:
         path_filter="/docs/",
         max_depth=MAX_DISCOVERY_DEPTH,
         concurrency=None,
+        incremental=False,
     ):
         """
         Run the crawler.
@@ -530,6 +569,7 @@ class Crawler:
             path_filter: Path pattern to filter links (default: '/docs/')
             max_depth: Maximum number of URLs to discover in recursive mode
             concurrency: Number of concurrent pages to process (default: 5, use 1 for sequential)
+            incremental: If True, skip unchanged pages (based on content hash)
         """
         if urls is None:
             urls = self.discover_links(start_url, path_filter, max_depth)
@@ -547,6 +587,8 @@ class Crawler:
         if concurrency == 1:
             # Use original synchronous mode
             logger.info(f"Starting download of {len(urls)} pages using Playwright (sequential)...")
+            if incremental:
+                logger.info("Incremental mode: skipping unchanged pages")
 
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
@@ -557,17 +599,23 @@ class Crawler:
                 page = context.new_page()
 
                 for url in tqdm(urls, unit="page"):
-                    result = self.process_url_with_playwright(page, url)
+                    result = self.process_url_with_playwright(page, url, incremental)
                     if result:
                         if result.get("failed"):
                             self.failed.append(result)
+                        elif result.get("skipped"):
+                            self.skipped.append(result)
                         else:
                             self.results.append(result)
 
                 browser.close()
+
+            # Save cache after crawling
+            if self.cache:
+                self.cache.save()
         else:
             # Use async concurrent mode
-            asyncio.run(self._run_async(urls, concurrency))
+            asyncio.run(self._run_async(urls, concurrency, incremental))
 
         self.generate_index()
         self.generate_failure_report()

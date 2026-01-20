@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-01-19
+
+### Added
+
+#### Incremental Crawling
+- **Content Hash Cache**: Store MD5 hash of crawled content to detect changes
+- **Skip Unchanged Pages**: Only re-crawl pages with changed content
+- **Cache File**: `.docs-crawler-cache.json` stores page metadata in output directory
+- **New CLI Options**:
+  - `--incremental` - Enable incremental mode, skip unchanged pages
+  - `--force` - Force re-crawl all pages, ignoring cache
+- **Summary Statistics**: Show skipped page count in crawl summary
+
+### Changed
+- Crawl summary now shows "Skipped (unchanged)" count
+
+---
+
 ## [0.2.1] - 2026-01-16
 
 ### Added
@@ -132,13 +150,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for v0.3.0
-- Incremental updates (only crawl changed pages)
+### Planned for v0.4.0
 - Progress save/resume functionality
 - Content filtering with custom CSS selectors
 
 ---
 
+[0.3.0]: https://github.com/neverbiasu/docs-crawler/releases/tag/v0.3.0
 [0.2.1]: https://github.com/neverbiasu/docs-crawler/releases/tag/v0.2.1
 [0.2.0]: https://github.com/neverbiasu/docs-crawler/releases/tag/v0.2.0
 [0.1.0]: https://github.com/neverbiasu/docs-crawler/releases/tag/v0.1.0
