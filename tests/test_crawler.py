@@ -204,6 +204,28 @@ class TestCrawler:
         # Query params should be preserved
         assert "https://example.com/docs/page1?version=2.0" in links
 
+    def test_crawler_with_custom_content_selectors(self):
+        """Test crawler accepts custom content selectors."""
+        crawler = Crawler(
+            base_url="https://example.com",
+            content_selectors=[".custom-content", "#main-article"],
+        )
+        assert crawler.content_selectors == [".custom-content", "#main-article"]
+
+    def test_crawler_with_custom_exclude_selectors(self):
+        """Test crawler accepts custom exclude selectors."""
+        crawler = Crawler(
+            base_url="https://example.com",
+            exclude_selectors=[".ads", ".comments"],
+        )
+        assert crawler.exclude_selectors == [".ads", ".comments"]
+
+    def test_crawler_default_selectors_are_none(self):
+        """Test crawler defaults to None for custom selectors."""
+        crawler = Crawler(base_url="https://example.com")
+        assert crawler.content_selectors is None
+        assert crawler.exclude_selectors is None
+
 
 class TestCLI:
     """Test cases for CLI functionality."""

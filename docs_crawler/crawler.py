@@ -21,7 +21,15 @@ logger = logging.getLogger(__name__)
 
 
 class Crawler:
-    def __init__(self, base_url=None, sitemap_url=None, output_dir="output", custom_folder=None):
+    def __init__(
+        self,
+        base_url=None,
+        sitemap_url=None,
+        output_dir="output",
+        custom_folder=None,
+        content_selectors=None,
+        exclude_selectors=None,
+    ):
         """
         Initialize the crawler.
 
@@ -30,10 +38,14 @@ class Crawler:
             sitemap_url: URL of the sitemap
             output_dir: Output directory for markdown files
             custom_folder: Custom folder name under output_dir
+            content_selectors: Custom CSS selectors for content extraction
+            exclude_selectors: Custom CSS selectors for elements to exclude
         """
         self.base_url = base_url
         self.sitemap_url = sitemap_url or (f"{base_url}/sitemap.xml" if base_url else None)
         self.output_dir = output_dir
+        self.content_selectors = content_selectors
+        self.exclude_selectors = exclude_selectors
         self.session = requests.Session()
         self.session.headers.update(
             {"User-Agent": "Mozilla/5.0 (compatible; Bot/1.0; +http://example.com)"}
