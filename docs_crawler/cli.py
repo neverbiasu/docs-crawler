@@ -125,6 +125,22 @@ Examples:
         help="Force re-crawl all pages, ignoring cache (opposite of --incremental)",
     )
 
+    parser.add_argument(
+        "--content-selector",
+        action="append",
+        dest="content_selectors",
+        metavar="SELECTOR",
+        help="CSS selector for main content (can be used multiple times)",
+    )
+
+    parser.add_argument(
+        "--exclude-selector",
+        action="append",
+        dest="exclude_selectors",
+        metavar="SELECTOR",
+        help="CSS selector for elements to exclude (can be used multiple times)",
+    )
+
     args = parser.parse_args()
 
     # Handle --init-config
@@ -184,6 +200,8 @@ Examples:
             sitemap_url=args.sitemap_url,
             output_dir=args.output_dir,
             custom_folder=args.folder,
+            content_selectors=args.content_selectors,
+            exclude_selectors=args.exclude_selectors,
         )
 
         try:
@@ -246,6 +264,8 @@ Examples:
             sitemap_url=args.sitemap_url,
             output_dir=args.output_dir,
             custom_folder=args.folder,
+            content_selectors=args.content_selectors,
+            exclude_selectors=args.exclude_selectors,
         )
 
         try:
@@ -294,6 +314,8 @@ Examples:
             sitemap_url=args.sitemap_url,
             output_dir=args.output_dir,
             custom_folder=args.folder,
+            content_selectors=args.content_selectors,
+            exclude_selectors=args.exclude_selectors,
         )
 
         try:
