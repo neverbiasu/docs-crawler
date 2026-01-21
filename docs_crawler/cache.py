@@ -172,8 +172,10 @@ class CrawlProgress:
         try:
             with open(self.progress_file, "r", encoding="utf-8") as f:
                 self.data = json.load(f)
-            logger.info(f"Loaded progress: {len(self.data.get('completed', []))} completed, "
-                        f"{len(self.data.get('pending', []))} pending")
+            logger.info(
+                f"Loaded progress: {len(self.data.get('completed', []))} completed, "
+                f"{len(self.data.get('pending', []))} pending"
+            )
             return self.data
         except (json.JSONDecodeError, IOError) as e:
             logger.warning(f"Failed to load progress: {e}")

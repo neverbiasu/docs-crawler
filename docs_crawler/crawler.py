@@ -8,7 +8,7 @@ from playwright.sync_api import sync_playwright
 from playwright.async_api import async_playwright
 from tqdm import tqdm
 import requests
-from docs_crawler.cache import CrawlCache, CrawlProgress
+from docs_crawler.cache import CrawlCache
 
 # Configuration
 MAX_RETRIES = 3
