@@ -337,21 +337,30 @@ class Crawler:
             ".navigation",
             ".menu",
         ]
+
+        # Add custom exclude selectors
+        if self.exclude_selectors:
+            unwanted_selectors.extend(self.exclude_selectors)
+
         for selector in unwanted_selectors:
             for element in soup.select(selector):
                 element.decompose()
 
         content_element = None
 
-        content_selectors = [
-            "article",
-            '[role="main"]',
-            ".docs-content",
-            ".content",
-            ".markdown-body",
-            "main",
-            ".main-content",
-        ]
+        # Use custom content selectors or defaults
+        if self.content_selectors:
+            content_selectors = self.content_selectors
+        else:
+            content_selectors = [
+                "article",
+                '[role="main"]',
+                ".docs-content",
+                ".content",
+                ".markdown-body",
+                "main",
+                ".main-content",
+            ]
 
         for selector in content_selectors:
             content_element = soup.select_one(selector)
