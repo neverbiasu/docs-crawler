@@ -183,6 +183,12 @@ Examples:
     if not args.incremental and config.get("incremental"):
         args.incremental = config["incremental"]
 
+    # Content selectors from config
+    if not args.content_selectors and config.get("content", {}).get("selectors"):
+        args.content_selectors = config["content"]["selectors"]
+    if not args.exclude_selectors and config.get("content", {}).get("exclude"):
+        args.exclude_selectors = config["content"]["exclude"]
+
     # --force overrides --incremental
     if args.force:
         args.incremental = False
