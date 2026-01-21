@@ -104,6 +104,18 @@ concurrency: 5
 
 # URL list file (for list mode)
 # file: urls.txt
+
+# Content selector configuration (optional)
+# content:
+#   # Main content selectors (tried in order, uses first with content)
+#   selectors:
+#     - article
+#     - '[role="main"]'
+#     - .docs-content
+#   # Additional elements to exclude
+#   exclude:
+#     - .comments
+#     - .ads
 """
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(example_config)

@@ -204,6 +204,75 @@ class TestCrawler:
         # Query params should be preserved
         assert "https://example.com/docs/page1?version=2.0" in links
 
+    def test_crawler_with_custom_content_selectors(self):
+        """Test crawler accepts custom content selectors."""
+        crawler = Crawler(
+            base_url="https://example.com",
+            content_selectors=[".custom-content", "#main-article"],
+        )
+        assert crawler.content_selectors == [".custom-content", "#main-article"]
+
+    def test_crawler_with_custom_exclude_selectors(self):
+        """Test crawler accepts custom exclude selectors."""
+        crawler = Crawler(
+            base_url="https://example.com",
+            exclude_selectors=[".ads", ".comments"],
+        )
+        assert crawler.exclude_selectors == [".ads", ".comments"]
+
+    def test_crawler_default_selectors_are_none(self):
+        """Test crawler defaults to None for custom selectors."""
+        crawler = Crawler(base_url="https://example.com")
+        assert crawler.content_selectors is None
+        assert crawler.exclude_selectors is None
+
+    def test_convert_to_markdown_with_custom_content_selector(self):
+        """Test custom content selector extracts specific content."""
+        crawler = Crawler(
+            base_url="https://example.com",
+            content_selectors=[".my-content"],
+        )
+        html = """
+        <html>
+        <head><title>Test</title></head>
+        <body>
+            <div class="sidebar">Sidebar content</div>
+            <div class="my-content">
+                <h1>Main Content</h1>
+                <p>This is the main content.</p>
+            </div>
+            <div class="other">Other content</div>
+        </body>
+        </html>
+        """
+        markdown, title = crawler.convert_to_markdown(html)
+        assert "Main Content" in markdown
+        assert "This is the main content" in markdown
+        assert "Sidebar content" not in markdown
+        assert "Other content" not in markdown
+
+    def test_convert_to_markdown_with_custom_exclude_selector(self):
+        """Test custom exclude selector removes specific elements."""
+        crawler = Crawler(
+            base_url="https://example.com",
+            exclude_selectors=[".remove-me"],
+        )
+        html = """
+        <html>
+        <head><title>Test</title></head>
+        <body>
+            <article>
+                <h1>Article</h1>
+                <p>Keep this.</p>
+                <div class="remove-me">Remove this.</div>
+            </article>
+        </body>
+        </html>
+        """
+        markdown, title = crawler.convert_to_markdown(html)
+        assert "Keep this" in markdown
+        assert "Remove this" not in markdown
+
 
 class TestCLI:
     """Test cases for CLI functionality."""

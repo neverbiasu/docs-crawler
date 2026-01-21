@@ -125,6 +125,22 @@ Examples:
         help="Force re-crawl all pages, ignoring cache (opposite of --incremental)",
     )
 
+    parser.add_argument(
+        "--content-selector",
+        action="append",
+        dest="content_selectors",
+        metavar="SELECTOR",
+        help="CSS selector for main content (can be used multiple times)",
+    )
+
+    parser.add_argument(
+        "--exclude-selector",
+        action="append",
+        dest="exclude_selectors",
+        metavar="SELECTOR",
+        help="CSS selector for elements to exclude (can be used multiple times)",
+    )
+
     args = parser.parse_args()
 
     # Handle --init-config
@@ -167,6 +183,12 @@ Examples:
     if not args.incremental and config.get("incremental"):
         args.incremental = config["incremental"]
 
+    # Content selectors from config
+    if not args.content_selectors and config.get("content", {}).get("selectors"):
+        args.content_selectors = config["content"]["selectors"]
+    if not args.exclude_selectors and config.get("content", {}).get("exclude"):
+        args.exclude_selectors = config["content"]["exclude"]
+
     # --force overrides --incremental
     if args.force:
         args.incremental = False
@@ -184,6 +206,8 @@ Examples:
             sitemap_url=args.sitemap_url,
             output_dir=args.output_dir,
             custom_folder=args.folder,
+            content_selectors=args.content_selectors,
+            exclude_selectors=args.exclude_selectors,
         )
 
         try:
@@ -246,6 +270,8 @@ Examples:
             sitemap_url=args.sitemap_url,
             output_dir=args.output_dir,
             custom_folder=args.folder,
+            content_selectors=args.content_selectors,
+            exclude_selectors=args.exclude_selectors,
         )
 
         try:
@@ -294,6 +320,8 @@ Examples:
             sitemap_url=args.sitemap_url,
             output_dir=args.output_dir,
             custom_folder=args.folder,
+            content_selectors=args.content_selectors,
+            exclude_selectors=args.exclude_selectors,
         )
 
         try:

@@ -8,7 +8,7 @@ from playwright.sync_api import sync_playwright
 from playwright.async_api import async_playwright
 from tqdm import tqdm
 import requests
-from docs_crawler.cache import CrawlCache, CrawlProgress
+from docs_crawler.cache import CrawlCache
 
 # Configuration
 MAX_RETRIES = 3
@@ -21,7 +21,15 @@ logger = logging.getLogger(__name__)
 
 
 class Crawler:
-    def __init__(self, base_url=None, sitemap_url=None, output_dir="output", custom_folder=None):
+    def __init__(
+        self,
+        base_url=None,
+        sitemap_url=None,
+        output_dir="output",
+        custom_folder=None,
+        content_selectors=None,
+        exclude_selectors=None,
+    ):
         """
         Initialize the crawler.
 
@@ -30,10 +38,14 @@ class Crawler:
             sitemap_url: URL of the sitemap
             output_dir: Output directory for markdown files
             custom_folder: Custom folder name under output_dir
+            content_selectors: Custom CSS selectors for content extraction
+            exclude_selectors: Custom CSS selectors for elements to exclude
         """
         self.base_url = base_url
         self.sitemap_url = sitemap_url or (f"{base_url}/sitemap.xml" if base_url else None)
         self.output_dir = output_dir
+        self.content_selectors = content_selectors
+        self.exclude_selectors = exclude_selectors
         self.session = requests.Session()
         self.session.headers.update(
             {"User-Agent": "Mozilla/5.0 (compatible; Bot/1.0; +http://example.com)"}
@@ -325,21 +337,30 @@ class Crawler:
             ".navigation",
             ".menu",
         ]
+
+        # Add custom exclude selectors
+        if self.exclude_selectors:
+            unwanted_selectors.extend(self.exclude_selectors)
+
         for selector in unwanted_selectors:
             for element in soup.select(selector):
                 element.decompose()
 
         content_element = None
 
-        content_selectors = [
-            "article",
-            '[role="main"]',
-            ".docs-content",
-            ".content",
-            ".markdown-body",
-            "main",
-            ".main-content",
-        ]
+        # Use custom content selectors or defaults
+        if self.content_selectors:
+            content_selectors = self.content_selectors
+        else:
+            content_selectors = [
+                "article",
+                '[role="main"]',
+                ".docs-content",
+                ".content",
+                ".markdown-body",
+                "main",
+                ".main-content",
+            ]
 
         for selector in content_selectors:
             content_element = soup.select_one(selector)
