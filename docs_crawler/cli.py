@@ -4,6 +4,7 @@ import argparse
 import logging
 from urllib.parse import urlparse
 from docs_crawler.crawler import Crawler
+from docs_crawler.exporter import Exporter
 from docs_crawler.config import load_config, find_config_file, generate_example_config
 
 # Setup logging
@@ -47,9 +48,9 @@ Examples:
 
     parser.add_argument(
         "--mode",
-        choices=["sitemap", "discover", "list"],
+        choices=["sitemap", "discover", "list", "export"],
         default="sitemap",
-        help="Mode: 'sitemap' (crawl), 'discover' (find URLs), or 'list' (crawl from file).",
+        help="Mode: 'sitemap' (crawl), 'discover' (find URLs), 'list' (crawl from file), or 'export'.",
     )
 
     parser.add_argument(
@@ -139,6 +140,26 @@ Examples:
         dest="exclude_selectors",
         metavar="SELECTOR",
         help="CSS selector for elements to exclude (can be used multiple times)",
+    )
+
+    # Export mode arguments
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help="Merge all markdown files into one (export mode)",
+    )
+
+    parser.add_argument(
+        "--format",
+        choices=["md", "pdf"],
+        default="md",
+        help="Output format for export: 'md' (default) or 'pdf'",
+    )
+
+    parser.add_argument(
+        "--input",
+        dest="input_dir",
+        help="Input directory containing markdown files (export mode)",
     )
 
     args = parser.parse_args()
@@ -331,6 +352,44 @@ Examples:
             sys.exit(0)
         except Exception as e:
             logger.error(f"Error during crawling: {e}")
+            import traceback
+
+            traceback.print_exc()
+            sys.exit(1)
+
+    elif args.mode == "export":
+        # Export mode: merge and/or convert to PDF
+        if not args.input_dir:
+            parser.error("--input is required when mode is 'export'")
+
+        if not os.path.isdir(args.input_dir):
+            logger.error(f"Input directory not found: {args.input_dir}")
+            sys.exit(1)
+
+        if not args.merge:
+            parser.error("--merge is required when mode is 'export'")
+
+        exporter = Exporter(
+            input_dir=args.input_dir,
+            output_path=args.output_file,
+        )
+
+        try:
+            if args.format == "pdf":
+                output_file = exporter.export_pdf()
+            else:
+                output_file = exporter.export_merged_md()
+
+            logger.info(f"Export complete: {output_file}")
+
+        except ImportError as e:
+            logger.error(str(e))
+            sys.exit(1)
+        except ValueError as e:
+            logger.error(str(e))
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Error during export: {e}")
             import traceback
 
             traceback.print_exc()
