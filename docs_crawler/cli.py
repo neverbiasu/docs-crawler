@@ -127,6 +127,12 @@ Examples:
     )
 
     parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Ignore progress file and start fresh (don't resume interrupted crawl)",
+    )
+
+    parser.add_argument(
         "--content-selector",
         action="append",
         dest="content_selectors",
@@ -303,6 +309,7 @@ Examples:
                 max_depth=args.max_depth,
                 concurrency=args.concurrency,
                 incremental=args.incremental,
+                fresh=args.fresh,
             )
         except KeyboardInterrupt:
             logger.info("\nCrawling interrupted by user.")
@@ -346,7 +353,12 @@ Examples:
         )
 
         try:
-            crawler.run(urls=urls, concurrency=args.concurrency, incremental=args.incremental)
+            crawler.run(
+                urls=urls,
+                concurrency=args.concurrency,
+                incremental=args.incremental,
+                fresh=args.fresh,
+            )
         except KeyboardInterrupt:
             logger.info("\nCrawling interrupted by user.")
             sys.exit(0)
