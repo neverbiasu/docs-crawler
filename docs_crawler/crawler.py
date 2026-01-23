@@ -8,7 +8,7 @@ from playwright.sync_api import sync_playwright
 from playwright.async_api import async_playwright
 from tqdm import tqdm
 import requests
-from docs_crawler.cache import CrawlCache
+from docs_crawler.cache import CrawlCache, CrawlProgress
 
 # Configuration
 MAX_RETRIES = 3
@@ -542,12 +542,23 @@ class Crawler:
 
         for r in results:
             if r is not None:
+                url = r.get("url")
                 if r.get("failed"):
                     self.failed.append(r)
+                    if self.progress:
+                        self.progress.mark_failed(url, r.get("error"))
                 elif r.get("skipped"):
                     self.skipped.append(r)
+                    if self.progress:
+                        self.progress.mark_completed(url)
                 else:
                     self.results.append(r)
+                    if self.progress:
+                        self.progress.mark_completed(url)
+
+        # Save progress after async crawling
+        if self.progress:
+            self.progress.save()
 
         # Save cache after crawling
         if self.cache:
@@ -561,6 +572,7 @@ class Crawler:
         max_depth=MAX_DISCOVERY_DEPTH,
         concurrency=None,
         incremental=False,
+        fresh=False,
     ):
         """
         Run the crawler.
@@ -572,6 +584,7 @@ class Crawler:
             max_depth: Maximum number of URLs to discover in recursive mode
             concurrency: Number of concurrent pages to process (default: 5, use 1 for sequential)
             incremental: If True, skip unchanged pages (based on content hash)
+            fresh: If True, ignore progress file and start fresh
         """
         if urls is None:
             urls = self.discover_links(start_url, path_filter, max_depth)
@@ -582,6 +595,29 @@ class Crawler:
 
         # Setup output directory from first URL
         self._setup_output_dir(urls[0])
+
+        # Initialize progress tracking
+        self.progress = CrawlProgress(self.output_subdir)
+
+        # Check for existing progress and resume if not fresh
+        if not fresh and self.progress.exists():
+            loaded = self.progress.load()
+            if loaded and self.progress.get_pending_urls():
+                urls = self.progress.get_pending_urls()
+                stats = self.progress.get_stats()
+                logger.info(
+                    f"Resuming crawl: {stats['completed']} completed, "
+                    f"{stats['pending']} pending, {stats['failed']} failed"
+                )
+            else:
+                # Progress file exists but no pending URLs
+                self.progress.clear()
+                self.progress.start(urls)
+        else:
+            if fresh and self.progress.exists():
+                logger.info("Fresh start requested, ignoring existing progress")
+                self.progress.clear()
+            self.progress.start(urls)
 
         if concurrency is None:
             concurrency = DEFAULT_CONCURRENCY
@@ -605,10 +641,14 @@ class Crawler:
                     if result:
                         if result.get("failed"):
                             self.failed.append(result)
+                            self.progress.mark_failed(url, result.get("error"))
                         elif result.get("skipped"):
                             self.skipped.append(result)
+                            self.progress.mark_completed(url)
                         else:
                             self.results.append(result)
+                            self.progress.mark_completed(url)
+                        self.progress.save()
 
                 browser.close()
 
@@ -622,4 +662,9 @@ class Crawler:
         self.generate_index()
         self.generate_failure_report()
         self._print_summary(len(urls))
+
+        # Clear progress file on completion
+        if self.progress and self.progress.is_complete():
+            self.progress.clear()
+
         logger.info("Done.")
