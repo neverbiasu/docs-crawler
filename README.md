@@ -4,15 +4,26 @@ A powerful documentation crawler that converts web documentation to Markdown for
 
 ## Features
 
-- **Smart Link Discovery**: Tries sitemap first, automatically falls back to recursive link discovery
-- **Discover Mode**: Find and save documentation URLs before crawling
-- Crawls documentation from sitemaps or URL lists
-- Uses Playwright to handle JavaScript-rendered Single Page Applications (SPAs)
-- Converts HTML to clean Markdown format
-- Auto-detects domain-based folder structure
-- Generates an index of all crawled pages
-- Progress tracking with tqdm
-- Retry logic for failed requests
+- **High Performance**:
+  - Async concurrent crawling (default 5x concurrency)
+  - Smart wait strategy (DOMContentLoaded + Selectors) avoids slow network idle waits
+  - Merged discovery and crawling phase for 2x efficiency in recursive mode
+- **Smart & Incremental**:
+  - Incremental updates (only crawls changed pages based on content hash)
+  - Tries sitemap first, automatically falls back to recursive link discovery
+- **Flexible Modes**:
+  - **Sitemap Mode**: Crawl from sitemap.xml
+  - **Discover Mode**: Find and save documentation URLs before crawling
+  - **List Mode**: Crawl from a text file of URLs
+- **Content Processing**:
+  - Uses Playwright to handle JavaScript-rendered Single Page Applications (SPAs)
+  - Converts HTML to clean Markdown format
+  - Auto-detects domain-based folder structure
+  - Generates an index of all crawled pages
+- **Robustness**:
+  - Progress tracking with tqdm
+  - Retry logic for failed requests
+  - Resume capability for interrupted crawls
 
 ## Requirements
 
@@ -49,20 +60,20 @@ playwright install chromium
 
 ### Command Line Interface
 
-The package provides a `docs-crawler` command with three modes:
+The package provides a `docs-crawler` command with several modes and optimizations.
 
-#### 1. Sitemap Mode (Default)
-Tries to fetch URLs from sitemap first, automatically falls back to recursive link discovery if sitemap is not available.
+#### 1. Sitemap Mode (Default & Fastest)
+Tries to fetch URLs from sitemap first. If sitemap is missing, it automatically switches to **concurrent recursive discovery**.
 
 ```bash
-# Crawl from sitemap (with automatic fallback)
+# Standard crawl (default 5 concurrent workers)
 poetry run docs-crawler --base-url https://example.com
 
-# Specify custom sitemap URL
-poetry run docs-crawler --sitemap-url https://example.com/custom-sitemap.xml
+# Boost concurrency for high-performance (e.g., 10 workers)
+poetry run docs-crawler --base-url https://example.com --concurrency 10
 
-# Customize path filter and max URLs to discover
-poetry run docs-crawler --base-url https://example.com --path-filter /docs/ --max-depth 200
+# Incremental update (skip unchanged pages)
+poetry run docs-crawler --base-url https://example.com --incremental
 ```
 
 #### 2. Discover Mode
@@ -71,22 +82,7 @@ Discover all documentation URLs and save them to a file for review before crawli
 ```bash
 # Discover links and save to auto-generated file (e.g., example_urls.txt)
 poetry run docs-crawler --mode discover --base-url https://example.com
-
-# Specify custom output file
-poetry run docs-crawler --mode discover --base-url https://example.com --output-file my-urls.txt
-
-# Start from a specific URL
-poetry run docs-crawler --mode discover --start-url https://example.com/docs/intro
-
-# Customize discovery settings
-poetry run docs-crawler --mode discover --base-url https://example.com --path-filter /api/ --max-depth 50
 ```
-
-The discover mode will:
-1. Find all documentation links (using sitemap or recursive discovery)
-2. Display the first 10 URLs as a preview
-3. Ask for your confirmation before saving
-4. Save URLs to a file named `{subdomain}_urls.txt` (e.g., `example_urls.txt`)
 
 #### 3. List Mode
 Crawl from a list of URLs in a text file.
@@ -94,28 +90,23 @@ Crawl from a list of URLs in a text file.
 ```bash
 # Crawl from URL list
 poetry run docs-crawler --mode list --file urls.txt
-
-# Specify custom output folder
-poetry run docs-crawler --mode list --file urls.txt --folder my-docs
 ```
 
 #### Common Options
 
 ```bash
-# Custom output directory
---output-dir custom-output
+# Smart wait settings
+--concurrency 5         # Number of parallel tabs (default: 5)
+--incremental           # Skip pages with unchanged content
+--force                 # Force re-crawl all pages
 
-# Custom folder name
---folder my-docs
+# Output settings
+--output-dir output     # Default output directory
+--folder my-docs        # Custom subfolder name
 
-# Path filter for link discovery (default: /docs/)
---path-filter /documentation/
-
-# Maximum URLs to discover (default: 100)
---max-depth 500
-
-# Starting URL for recursive discovery
---start-url https://example.com/docs/
+# Discovery settings
+--path-filter /docs/    # Only follow links containing this path
+--max-depth 100         # Maximum number of pages to discover
 ```
 
 ### Python API
@@ -125,41 +116,56 @@ from docs_crawler import Crawler
 
 # Create crawler instance
 crawler = Crawler(
-    base_url="https://antigravity.google",
-    output_dir="output",
-    custom_folder="antigravity"
+    base_url="https://fastapi.tiangolo.com",
+    output_dir="output"
 )
 
-# Run with automatic link discovery (sitemap first, then recursive)
-crawler.run()
-
-# Discover links only
-urls = crawler.discover_links(
-    start_url="https://example.com/docs/",
-    path_filter="/docs/",
-    max_depth=100
-)
-print(f"Found {len(urls)} URLs")
-
-# Run with custom URLs
-crawler.run(urls=[
-    "https://example.com/docs/page1",
-    "https://example.com/docs/page2"
-])
-
-# Run with custom discovery settings
+# Run with high performance settings
 crawler.run(
-    start_url="https://example.com/docs/intro",
-    path_filter="/documentation/",
-    max_depth=200
+    concurrency=10,      # Run 10 tabs in parallel
+    incremental=True     # Skip unchanged pages
 )
 ```
 
-## Output
+## Visualizations
 
-- The downloaded Markdown files will be saved in the `output/` directory (or custom directory).
-- An index of all downloaded pages is available at `output/{folder}/index.md`.
-- Files are organized by domain or custom folder name.
+### Terminal Output
+The crawler provides real-time progress tracking with detailed statistics:
+
+```text
+2026-02-08 14:53:53 - INFO - Starting concurrent download of 50 pages (concurrency=5)...
+Crawling: 100%|██████████| 50/50 [00:15<00:00,  3.20page/s]
+2026-02-08 14:54:08 - INFO - ==================================================
+2026-02-08 14:54:08 - INFO - Crawl Summary:
+2026-02-08 14:54:08 - INFO -   Total URLs: 50
+2026-02-08 14:54:08 - INFO -   Successful: 48
+2026-02-08 14:54:08 - INFO -   Skipped (unchanged): 2
+2026-02-08 14:54:08 - INFO -   Failed: 0
+2026-02-08 14:54:08 - INFO -   Success Rate: 96.0%
+2026-02-08 14:54:08 - INFO - ==================================================
+```
+
+### Output Structure
+Files are organized automatically by domain, with a generated index:
+
+```text
+output/
+├── example/
+│   ├── index.md          # Table of contents with links
+│   ├── intro.md          # Converted documentation pages
+│   ├── getting-started.md
+│   ├── api-reference.md
+│   └── advanced.md
+└── failed_urls.txt       # Report of any failed downloads
+```
+
+### Generated Index
+The `index.md` file provides easy navigation:
+
+| Title | Original URL | Local File |
+|-------|--------------|------------|
+| Introduction | [https://example.com/docs](...) | [intro.md](intro.md) |
+| API Reference | [https://example.com/docs/api](...) | [api_reference.md](api_reference.md) |
 
 ## Development
 

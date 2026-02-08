@@ -62,7 +62,7 @@ class Crawler:
         os.makedirs(output_dir, exist_ok=True)
 
     def extract_subdomain(self, url):
-        """从URL中提取二级域名（主域名）作为文件夹名。"""
+        """Extract the second-level domain (main domain) from the URL to use as the folder name."""
         parsed = urlparse(url)
         hostname = parsed.hostname
         if hostname:
@@ -98,6 +98,41 @@ class Crawler:
         except Exception as e:
             logger.error(f"Failed to fetch sitemap: {e}")
             return []
+
+    async def _extract_links_from_page_async(self, page, current_url, path_filter="/docs/"):
+        """
+        Async version of extract_links_from_page.
+        """
+        links = set()
+
+        try:
+            # Get all <a> tags
+            link_elements = await page.query_selector_all("a[href]")
+
+            parsed_base = urlparse(current_url)
+            base_domain = parsed_base.netloc
+
+            for element in link_elements:
+                href = await element.get_attribute("href")
+                if not href:
+                    continue
+
+                # Convert relative URLs to absolute
+                absolute_url = urljoin(current_url, href)
+                parsed_url = urlparse(absolute_url)
+
+                # Filter: same domain and contains path_filter
+                if parsed_url.netloc == base_domain and path_filter in parsed_url.path:
+                    # Remove fragment and normalize
+                    clean_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+                    if parsed_url.query:
+                        clean_url += f"?{parsed_url.query}"
+                    links.add(clean_url)
+
+        except Exception as e:
+            logger.warning(f"Error extracting links from {current_url}: {e}")
+
+        return links
 
     def extract_links_from_page(self, page, current_url, path_filter="/docs/"):
         """
@@ -184,9 +219,14 @@ class Crawler:
                 pbar.set_postfix({"found": len(discovered), "queue": len(to_visit)})
 
                 try:
-                    # Load the page
+                    # Load the page with smart wait
                     page.goto(current_url, timeout=PAGE_LOAD_TIMEOUT)
-                    page.wait_for_load_state("networkidle", timeout=15000)
+                    page.wait_for_load_state("domcontentloaded", timeout=PAGE_LOAD_TIMEOUT)
+                    try:
+                        # Wait for at least some links to appear
+                        page.wait_for_selector("a[href]", timeout=5000)
+                    except Exception:
+                        pass
 
                     # Extract links from this page
                     new_links = self.extract_links_from_page(page, current_url, path_filter)
@@ -266,12 +306,17 @@ class Crawler:
             try:
                 page.goto(url, timeout=PAGE_LOAD_TIMEOUT)
 
-                try:
-                    page.wait_for_selector('article, main, [role="main"]', timeout=10000)
-                except Exception:
-                    pass
+                # Smart wait strategy:
+                # 1. Wait for DOM content loaded (fastest)
+                # 2. Wait for content selector (ensures SPA hydration)
+                page.wait_for_load_state("domcontentloaded", timeout=PAGE_LOAD_TIMEOUT)
 
-                page.wait_for_load_state("networkidle", timeout=15000)
+                try:
+                    # Wait for main content to appear
+                    page.wait_for_selector('article, main, [role="main"], .content, .markdown-body', timeout=5000)
+                except Exception:
+                    # Fallback for pages without standard content wrappers
+                    pass
 
                 content = page.content()
                 break
@@ -464,13 +509,16 @@ class Crawler:
                 for attempt in range(MAX_RETRIES):
                     try:
                         await page.goto(url, timeout=PAGE_LOAD_TIMEOUT)
+                        # Smart wait strategy
+                        await page.wait_for_load_state("domcontentloaded", timeout=PAGE_LOAD_TIMEOUT)
                         try:
                             await page.wait_for_selector(
-                                'article, main, [role="main"]', timeout=10000
+                                'article, main, [role="main"], .content, .markdown-body', timeout=5000
                             )
                         except Exception:
                             pass
-                        await page.wait_for_load_state("networkidle", timeout=15000)
+                        # Removed networkidle wait which slows down crawling significantly
+                        # await page.wait_for_load_state("networkidle", timeout=15000)
                         content = await page.content()
                         break
                     except Exception as e:
@@ -564,6 +612,197 @@ class Crawler:
         if self.cache:
             self.cache.save()
 
+    async def _crawl_recursive_async(
+        self,
+        start_url,
+        max_depth=MAX_DISCOVERY_DEPTH,
+        concurrency=DEFAULT_CONCURRENCY,
+        path_filter="/docs/",
+        incremental=False,
+    ):
+        """
+        Recursively crawl and discover links concurrently.
+        Merges discovery and crawling phases for better performance.
+        """
+        logger.info(
+            f"Starting recursive concurrent crawl from {start_url} (concurrency={concurrency})"
+        )
+
+        # Setup output directory
+        self._setup_output_dir(start_url)
+
+        # Initialize progress if needed
+        if not self.progress:
+            self.progress = CrawlProgress(self.output_subdir)
+            self.progress.start([start_url])
+
+        queue = asyncio.Queue()
+        queue.put_nowait((start_url, 0))  # (url, depth)
+
+        visited = set()
+        # Add start_url to visited immediately to prevent re-queueing
+        visited.add(start_url)
+
+        # Track pending tasks to know when we are done
+        pending_count = 1
+
+        semaphore = asyncio.Semaphore(concurrency)
+        pbar = tqdm(unit="page", desc="Crawling")
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+
+            async def worker():
+                nonlocal pending_count
+
+                while True:
+                    try:
+                        # Get a "work item" out of the queue.
+                        url, depth = await queue.get()
+                    except asyncio.CancelledError:
+                        return
+
+                    async with semaphore:
+                        try:
+                            # Process the URL
+                            page = await context.new_page()
+                            try:
+                                # 1. Visit and Extract Content
+                                result = await self._process_page_recursive(
+                                    page, url, incremental
+                                )
+
+                                # Handle result
+                                if result.get("failed"):
+                                    self.failed.append(result)
+                                    if self.progress:
+                                        self.progress.mark_failed(url, result.get("error"))
+                                elif result.get("skipped"):
+                                    self.skipped.append(result)
+                                    if self.progress:
+                                        self.progress.mark_completed(url)
+                                else:
+                                    self.results.append(result)
+                                    if self.progress:
+                                        self.progress.mark_completed(url)
+
+                                # 2. Discover new links (if depth allows)
+                                if depth < max_depth:
+                                    # Extract links from the already loaded page
+                                    links = await self._extract_links_from_page_async(
+                                        page, url, path_filter
+                                    )
+
+                                    for link in links:
+                                        if link not in visited:
+                                            visited.add(link)
+                                            pending_count += 1
+                                            queue.put_nowait((link, depth + 1))
+
+                            finally:
+                                await page.close()
+
+                        except Exception as e:
+                            logger.error(f"Worker error processing {url}: {e}")
+                            if self.progress:
+                                self.progress.mark_failed(url, str(e))
+                        finally:
+                            # Notify the queue that the "work item" has been processed.
+                            queue.task_done()
+                            pbar.update(1)
+                            pbar.set_postfix({"depth": depth, "queue": queue.qsize()})
+
+                            pending_count -= 1
+                            if self.progress:
+                                self.progress.save()
+
+            # Create worker tasks
+            workers = [asyncio.create_task(worker()) for _ in range(concurrency)]
+
+            # Wait until the queue is fully processed
+            # We monitor pending_count because queue.join() blocks forever if workers are waiting
+            while pending_count > 0:
+                await asyncio.sleep(0.5)
+                # If queue is empty but pending_count > 0, workers are busy.
+                # If pending_count == 0, we are done.
+
+            # Cancel our worker tasks.
+            for w in workers:
+                w.cancel()
+
+            # Wait until all worker tasks are cancelled.
+            await asyncio.gather(*workers, return_exceptions=True)
+
+            pbar.close()
+            await browser.close()
+
+        # Save final cache
+        if self.cache:
+            self.cache.save()
+
+    async def _process_page_recursive(self, page, url, incremental):
+        """Helper to process a single page for recursive crawler (similar to _process_url_async but reuses page logic)."""
+        # Logic is very similar to process_url_with_playwright but async
+        # We can reuse _process_url_async logic but we need to pass a semaphore there.
+        # To avoid code duplication, we'll implement the core logic here directly since we are already inside a semaphore block in the worker.
+
+        slug = urlparse(url).path.strip("/").replace("/", "_")
+        if not slug:
+            slug = "index"
+        filename = f"{slug}.md"
+        filepath = os.path.join(self.output_subdir, filename)
+
+        content = None
+        title = None
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                # Smart wait strategy
+                await page.goto(url, timeout=PAGE_LOAD_TIMEOUT)
+                await page.wait_for_load_state("domcontentloaded", timeout=PAGE_LOAD_TIMEOUT)
+                try:
+                    await page.wait_for_selector(
+                        'article, main, [role="main"], .content, .markdown-body', timeout=5000
+                    )
+                except Exception:
+                    pass
+
+                content = await page.content()
+                break
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1} failed for {url}: {e}")
+                if attempt == MAX_RETRIES - 1:
+                    return {"url": url, "error": str(e), "failed": True}
+
+        if content:
+            try:
+                markdown_content, page_title = self.convert_to_markdown(content)
+                title = page_title
+
+                # Check if content changed (incremental mode)
+                content_hash = CrawlCache.compute_hash(markdown_content)
+                if incremental and self.cache:
+                    if not self.cache.is_changed(url, content_hash):
+                        return {"url": url, "skipped": True, "reason": "unchanged"}
+
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(markdown_content)
+
+                # Update cache
+                if self.cache:
+                    self.cache.update_page(url, content_hash)
+
+                return {"title": title, "url": url, "file": filename}
+            except Exception as e:
+                logger.error(f"Error converting {url}: {e}")
+                return {"url": url, "error": str(e), "failed": True}
+
+        return {"url": url, "error": "Empty content", "failed": True}
+
     def run(
         self,
         urls=None,
@@ -576,92 +815,117 @@ class Crawler:
     ):
         """
         Run the crawler.
-
-        Args:
-            urls: List of URLs to crawl. If None, uses discover_links method.
-            start_url: Starting URL for recursive discovery (if needed)
-            path_filter: Path pattern to filter links (default: '/docs/')
-            max_depth: Maximum number of URLs to discover in recursive mode
-            concurrency: Number of concurrent pages to process (default: 5, use 1 for sequential)
-            incremental: If True, skip unchanged pages (based on content hash)
-            fresh: If True, ignore progress file and start fresh
         """
+        # Determine mode: List/Sitemap or Recursive
+        mode = "list"
         if urls is None:
-            urls = self.discover_links(start_url, path_filter, max_depth)
-
-        if not urls:
-            logger.warning("No URLs found to process.")
-            return
-
-        # Setup output directory from first URL
-        self._setup_output_dir(urls[0])
-
-        # Initialize progress tracking
-        self.progress = CrawlProgress(self.output_subdir)
-
-        # Check for existing progress and resume if not fresh
-        if not fresh and self.progress.exists():
-            loaded = self.progress.load()
-            if loaded and self.progress.get_pending_urls():
-                urls = self.progress.get_pending_urls()
-                stats = self.progress.get_stats()
-                logger.info(
-                    f"Resuming crawl: {stats['completed']} completed, "
-                    f"{stats['pending']} pending, {stats['failed']} failed"
-                )
+            # Try sitemap first
+            urls = self.fetch_sitemap()
+            if urls:
+                logger.info(f"Successfully found {len(urls)} URLs from sitemap")
             else:
-                # Progress file exists but no pending URLs
-                self.progress.clear()
-                self.progress.start(urls)
-        else:
-            if fresh and self.progress.exists():
-                logger.info("Fresh start requested, ignoring existing progress")
-                self.progress.clear()
-            self.progress.start(urls)
+                mode = "recursive"
 
         if concurrency is None:
             concurrency = DEFAULT_CONCURRENCY
 
-        if concurrency == 1:
-            # Use original synchronous mode
-            logger.info(f"Starting download of {len(urls)} pages using Playwright (sequential)...")
-            if incremental:
-                logger.info("Incremental mode: skipping unchanged pages")
+        if mode == "recursive":
+            # Recursive Mode
+            if not start_url:
+                 # Try to construct a starting URL
+                if self.base_url:
+                    start_url = (
+                        f"{self.base_url}/docs/"
+                        if not self.base_url.endswith("/")
+                        else f"{self.base_url}docs/"
+                    )
+                else:
+                    logger.error("No start URL provided and no base_url configured")
+                    return
 
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                context = browser.new_context(
-                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
-                page = context.new_page()
+            logger.info("Sitemap not available, using recursive concurrent crawler")
+            asyncio.run(self._crawl_recursive_async(
+                start_url=start_url,
+                max_depth=max_depth,
+                concurrency=concurrency,
+                path_filter=path_filter,
+                incremental=incremental
+            ))
 
-                for url in tqdm(urls, unit="page"):
-                    result = self.process_url_with_playwright(page, url, incremental)
-                    if result:
-                        if result.get("failed"):
-                            self.failed.append(result)
-                            self.progress.mark_failed(url, result.get("error"))
-                        elif result.get("skipped"):
-                            self.skipped.append(result)
-                            self.progress.mark_completed(url)
-                        else:
-                            self.results.append(result)
-                            self.progress.mark_completed(url)
-                        self.progress.save()
-
-                browser.close()
-
-            # Save cache after crawling
-            if self.cache:
-                self.cache.save()
         else:
-            # Use async concurrent mode
-            asyncio.run(self._run_async(urls, concurrency, incremental))
+            # List/Sitemap Mode (Existing Logic)
+            if not urls:
+                logger.warning("No URLs found to process.")
+                return
+
+            # Setup output directory from first URL
+            self._setup_output_dir(urls[0])
+
+            # Initialize progress tracking
+            self.progress = CrawlProgress(self.output_subdir)
+
+            # Check for existing progress and resume if not fresh
+            if not fresh and self.progress.exists():
+                loaded = self.progress.load()
+                if loaded and self.progress.get_pending_urls():
+                    urls = self.progress.get_pending_urls()
+                    stats = self.progress.get_stats()
+                    logger.info(
+                        f"Resuming crawl: {stats['completed']} completed, "
+                        f"{stats['pending']} pending, {stats['failed']} failed"
+                    )
+                else:
+                    self.progress.clear()
+                    self.progress.start(urls)
+            else:
+                if fresh and self.progress.exists():
+                    logger.info("Fresh start requested, ignoring existing progress")
+                    self.progress.clear()
+                self.progress.start(urls)
+
+            if concurrency == 1:
+                # Use original synchronous mode
+                logger.info(f"Starting download of {len(urls)} pages using Playwright (sequential)...")
+                if incremental:
+                    logger.info("Incremental mode: skipping unchanged pages")
+
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=True)
+                    context = browser.new_context(
+                        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    )
+                    page = context.new_page()
+
+                    for url in tqdm(urls, unit="page"):
+                        result = self.process_url_with_playwright(page, url, incremental)
+                        if result:
+                            if result.get("failed"):
+                                self.failed.append(result)
+                                self.progress.mark_failed(url, result.get("error"))
+                            elif result.get("skipped"):
+                                self.skipped.append(result)
+                                self.progress.mark_completed(url)
+                            else:
+                                self.results.append(result)
+                                self.progress.mark_completed(url)
+                            self.progress.save()
+
+                    browser.close()
+
+                # Save cache after crawling
+                if self.cache:
+                    self.cache.save()
+            else:
+                # Use async concurrent mode
+                asyncio.run(self._run_async(urls, concurrency, incremental))
 
         self.generate_index()
         self.generate_failure_report()
-        self._print_summary(len(urls))
+        if mode == "recursive":
+             self._print_summary(len(self.results) + len(self.skipped) + len(self.failed))
+        else:
+             self._print_summary(len(urls))
 
         # Clear progress file on completion
         if self.progress and self.progress.is_complete():
