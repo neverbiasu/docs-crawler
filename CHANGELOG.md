@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-02-08
+
+### Added
+
+#### Performance Optimizations
+- **Smart Wait Strategy**: Replaced slow `networkidle` with `domcontentloaded` + selector waiting (2-3x speedup)
+- **Merged Discovery & Crawling**: Recursive mode now discovers links and extracts content in a single pass (2x efficiency)
+- **Enhanced Concurrency**: Improved async implementation for better stability under load
+
+#### Documentation
+- **Visualizations**: Added terminal output preview and directory structure examples to README
+- **Usage Guides**: Updated documentation for high-performance modes
+
+### Changed
+- Recursive crawler no longer visits pages twice (once for discovery, once for crawling)
+- Default wait timeout optimized for speed
+
+---
+
 ## [0.3.0] - 2026-01-19
 
 ### Added
